@@ -1,0 +1,5 @@
+WNS_ns 9.478
+TNS_ns 0.000
+WHS_ns 0.071
+Fmax_est_MHz 1916.5
+critical_warnings 0

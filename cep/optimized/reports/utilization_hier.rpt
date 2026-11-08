@@ -1,0 +1,40 @@
+Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
+-------------------------------------------------------------------------------------
+| Tool Version : Vivado v.2022.2 (lin64) Build 3671981 Fri Oct 14 04:59:54 MDT 2022
+| Date         : Sun Nov  8 14:10:52 2026
+| Host         : mutahir-HP-ProBook-450-G7 running 64-bit Ubuntu 24.04.4 LTS
+| Command      : report_utilization -hierarchical -file reports/utilization_hier.rpt
+| Design       : nexys7_top
+| Device       : xc7a100tcsg324-1
+| Speed File   : -1
+| Design State : Routed
+-------------------------------------------------------------------------------------
+
+Utilization Design Information
+
+Table of Contents
+-----------------
+1. Utilization by Hierarchy
+
+1. Utilization by Hierarchy
+---------------------------
+
++--------------------+----------------------------+------------+------------+---------+------+-----+--------+--------+------------+
+|      Instance      |           Module           | Total LUTs | Logic LUTs | LUTRAMs | SRLs | FFs | RAMB36 | RAMB18 | DSP Blocks |
++--------------------+----------------------------+------------+------------+---------+------+-----+--------+--------+------------+
+| nexys7_top         |                      (top) |       1138 |        434 |     704 |    0 | 275 |      0 |      0 |          0 |
+|   (nexys7_top)     |                      (top) |         12 |         12 |       0 |    0 | 115 |      0 |      0 |          0 |
+|   u_perf           |              perf_counters |         42 |         42 |       0 |    0 |  33 |      0 |      0 |          0 |
+|   u_seg            |                seg7_driver |         14 |         14 |       0 |    0 |  31 |      0 |      0 |          0 |
+|   u_tage           |                   tage_top |       1051 |        347 |     704 |    0 |  79 |      0 |      0 |          0 |
+|     g_tab[1].u_tab |                 tage_table |        222 |         70 |     152 |    0 |   9 |      0 |      0 |          0 |
+|     g_tab[2].u_tab |               tage_table_0 |        227 |         75 |     152 |    0 |   9 |      0 |      0 |          0 |
+|     g_tab[3].u_tab |               tage_table_1 |        225 |         73 |     152 |    0 |   9 |      0 |      0 |          0 |
+|     g_tab[4].u_tab |               tage_table_2 |        222 |         70 |     152 |    0 |   9 |      0 |      0 |          0 |
+|     u_hash         |                  tage_hash |         30 |         30 |       0 |    0 |  32 |      0 |      0 |          0 |
+|     u_t0           | tage_table__parameterized0 |        128 |         32 |      96 |    0 |  11 |      0 |      0 |          0 |
+|   u_tg             |                  trace_rom |         21 |         21 |       0 |    0 |  17 |      0 |      0 |          0 |
++--------------------+----------------------------+------------+------------+---------+------+-----+--------+--------+------------+
+* Note: The sum of lower-level cells may be larger than their parent cells total, due to cross-hierarchy LUT combining
+
+

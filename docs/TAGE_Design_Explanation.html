@@ -1,0 +1,954 @@
+<!doctype html><html><head><meta charset="utf-8"><title>TAGE Design Explanation</title>
+<style>
+@page { size: A4; margin: 16mm 15mm 16mm 15mm; }
+body { font-family: "Helvetica Neue", Helvetica, Arial, sans-serif; font-size: 10.4pt; line-height: 1.45; color: #1a1a1a; }
+h1 { font-size: 24pt; margin: 0 0 4pt 0; color: #1d3c5e; }
+h2 { font-size: 15pt; color: #1d3c5e; border-bottom: 2px solid #1d3c5e; padding-bottom: 3pt; margin-top: 0; break-before: page; }
+h3 { font-size: 12pt; color: #2b5d8a; margin: 14pt 0 4pt 0; break-after: avoid; }
+p { margin: 4pt 0 6pt 0; }
+table { border-collapse: collapse; margin: 6pt 0 10pt 0; width: 100%; break-inside: avoid; font-size: 9.6pt; }
+th, td { border: 1px solid #b8c4d0; padding: 3pt 6pt; text-align: left; vertical-align: top; }
+th { background: #e8eef5; }
+code { font-family: "DejaVu Sans Mono", Menlo, Consolas, monospace; font-size: 9pt; background: #f2f4f7; padding: 0 2pt; border-radius: 2pt; }
+.code { margin: 6pt 0 10pt 0; border: 1px solid #c9d3dd; border-radius: 4pt; }
+.code .ctitle { background: #e8eef5; font-size: 8.6pt; padding: 2pt 6pt; color: #2b5d8a; font-weight: bold; border-bottom: 1px solid #c9d3dd; }
+.code pre { margin: 0; padding: 5pt 6pt; font-family: "DejaVu Sans Mono", Menlo, Consolas, monospace; font-size: 7.9pt; line-height: 1.32; white-space: pre-wrap; background: #fbfcfd; }
+.ln { color: #9aa5b1; } .kw { color: #1d4ed8; font-weight: bold; } .cm { color: #6b7280; font-style: italic; }
+.fig { width: 100%; margin: 6pt 0 8pt 0; break-inside: avoid; } .fig.small { width: 78%; }
+.note { background: #f5f9ff; border-left: 4px solid #2b5d8a; padding: 5pt 9pt; margin: 8pt 0; break-inside: avoid; }
+.warn { background: #fff8eb; border-left: 4px solid #b7791f; padding: 5pt 9pt; margin: 8pt 0; break-inside: avoid; }
+.cover { height: 250mm; display: flex; flex-direction: column; justify-content: center; }
+.cover .sub { font-size: 13pt; color: #2b5d8a; margin-bottom: 28pt; }
+.cover table { width: 75%; font-size: 10.5pt; }
+.toc li { margin: 2pt 0; }
+.qa p.q { font-weight: bold; margin-bottom: 1pt; color: #1d3c5e; }
+.qa p.a { margin-top: 0; margin-bottom: 8pt; }
+ul, ol { margin: 3pt 0 6pt 0; padding-left: 18pt; } li { margin: 1.5pt 0; }
+.kpi { display: flex; gap: 8pt; margin: 8pt 0; } .kpi div { flex: 1; border: 1px solid #c9d3dd; border-radius: 4pt; padding: 6pt; text-align: center; }
+.kpi b { display: block; font-size: 15pt; color: #1d3c5e; }
+</style></head><body>
+<div class="cover">
+<h1>A Simple TAGE Branch Predictor on FPGA</h1>
+<div class="sub">Design explanation &mdash; SystemVerilog RTL for the Digilent Nexys A7-100T (Artix-7)</div>
+<table>
+<tr><th>Target</th><td>Nexys A7-100T, xc7a100tcsg324-1, 100 MHz</td></tr>
+<tr><th>Tools</th><td>Vivado 2022.2 (synthesis, implementation, xsim), Verilator 5.020</td></tr>
+<tr><th>Predictor</th><td>TAGE: 1 base table + 4 tagged tables, history lengths 4 / 8 / 16 / 32</td></tr>
+<tr><th>Storage</th><td>15 360 bits (compared with gshare 4K = 8 192 bits and 8K = 16 384 bits)</td></tr>
+<tr><th>RTL size</th><td>12 synthesizable files, about 1 100 lines including header comments</td></tr>
+<tr><th>Result</th><td>Timing met at 100 MHz, 0 BRAM, 992 LUTRAM; 2 000 000 simulated branches with 0 mismatches</td></tr>
+<tr><th>Author</th><td>Hafiz Mutahir Ahmed</td></tr>
+</table>
+<h3 style="margin-top:26pt">Contents</h3>
+<ol class="toc">
+<li>Branch prediction and the idea behind TAGE</li>
+<li>Architecture overview</li>
+<li>Data formats and the life of one branch</li>
+<li>The predictor core, module by module</li>
+<li>The board wrapper (Nexys A7)</li>
+<li>Worked example: how TAGE learns a correlation gshare cannot see</li>
+<li>Verification</li>
+<li>Results</li>
+<li>Design decisions and likely questions</li>
+<li>Limitations</li>
+</ol>
+</div>
+
+<h2>1. Branch prediction and the idea behind TAGE</h2>
+<p>A pipelined processor fetches instructions before it knows whether a conditional branch
+will be taken. A <b>branch predictor</b> guesses the outcome at fetch time. A wrong guess
+(<i>mispredict</i>) costs a pipeline flush, so fewer mispredicts means a faster processor.</p>
+
+<h3>Simple predictors</h3>
+<ul>
+<li><b>Bimodal:</b> a table of 2-bit saturating counters indexed by the branch address (PC).
+  The counter moves up when the branch is taken and down when it is not; its top bit is the
+  prediction. It learns branches that are mostly taken or mostly not taken.</li>
+<li><b>gshare:</b> indexes the counter table with <code>PC XOR global history</code>. The
+  <b>global history register (GHR)</b> is a shift register holding the outcomes of the last
+  branches. gshare can learn patterns, but only within its history length (12&ndash;13 bits here).</li>
+</ul>
+
+<h3>TAGE (TAgged GEometric history length)</h3>
+<p>TAGE combines several tables that look at <b>different amounts of history</b>, with the
+lengths growing geometrically (here 4, 8, 16 and 32 outcomes):</p>
+<ul>
+<li>A <b>base table T0</b> (bimodal) always gives a prediction.</li>
+<li>Each <b>tagged table T1..T4</b> is indexed by a hash of the PC and its own history length.
+  Every entry stores a <b>tag</b>, so a table only answers if the entry really belongs to this
+  branch and history (a <i>hit</i>).</li>
+<li>The prediction comes from the hitting table with the <b>longest history</b> (the
+  <i>provider</i>). Short histories learn quickly; long histories catch correlations far back.</li>
+<li>Entries are <b>allocated</b> in longer-history tables only when a branch is mispredicted,
+  and a <b>useful bit u</b> protects entries that have proven themselves.</li>
+</ul>
+<div class="note">Why it matters here: on a branch whose outcome depends on a branch 16 or 32
+branches earlier, our TAGE mispredicts 0.05&ndash;0.13 % of the time, while gshare with the
+same storage mispredicts about 50 % (it cannot see that far back). See section 8.</div>
+
+<h2>2. Architecture overview</h2>
+
+<svg viewBox="0 0 760 430" class="fig" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial" font-size="12">
+ <defs><marker id="ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+   <path d="M0,0 L8,4 L0,8 z" fill="#333"/></marker></defs>
+ <style>.blk-b{fill:#eef4fb;stroke:#2b5d8a;stroke-width:1.4}.blk-m{fill:#fff6e5;stroke:#b7791f;stroke-width:1.4}
+  .blk-u{fill:#eefaf0;stroke:#2f855a;stroke-width:1.4}.blk-l{stroke:#333;stroke-width:1.3;fill:none;marker-end:url(#ar)}
+  .blk-lu{stroke:#2f855a;stroke-width:1.3;fill:none;marker-end:url(#ar);stroke-dasharray:5 3}
+  .blk-t{font-weight:bold}.blk-s{font-size:10.5px;fill:#444}</style>
+ <text x="10" y="20" class="blk-t" font-size="13">PREDICT path (combinational, cycle A)</text>
+ <text x="470" y="20" class="blk-t" font-size="13" fill="#2f855a">UPDATE path (clock edge, cycle B)</text>
+ <!-- pc -->
+ <text x="12" y="72" class="blk-t">pred_pc</text>
+ <path class="blk-l" d="M62,68 L95,68"/>
+ <rect class="blk-b" x="97" y="40" width="170" height="70" rx="6"/>
+ <text x="182" y="58" text-anchor="middle" class="blk-t">tage_hash</text>
+ <text x="182" y="75" text-anchor="middle" class="blk-s">GHR[31:0] (bit 0 = newest)</text>
+ <text x="182" y="90" text-anchor="middle" class="blk-s">idx = pc[9:2] ^ fold(GHR,L)</text>
+ <text x="182" y="104" text-anchor="middle" class="blk-s">tag = pc[17:10] ^ rotl(fold)</text>
+ <!-- tables -->
+ <g>
+  <rect class="blk-m" x="40"  y="160" width="100" height="62" rx="5"/><text x="90"  y="180" text-anchor="middle" class="blk-t">T1</text><text x="90" y="196" text-anchor="middle" class="blk-s">L = 4</text><text x="90" y="210" text-anchor="middle" class="blk-s">256 x 13 bit</text>
+  <rect class="blk-m" x="150" y="160" width="100" height="62" rx="5"/><text x="200" y="180" text-anchor="middle" class="blk-t">T2</text><text x="200" y="196" text-anchor="middle" class="blk-s">L = 8</text><text x="200" y="210" text-anchor="middle" class="blk-s">256 x 13 bit</text>
+  <rect class="blk-m" x="260" y="160" width="100" height="62" rx="5"/><text x="310" y="180" text-anchor="middle" class="blk-t">T3</text><text x="310" y="196" text-anchor="middle" class="blk-s">L = 16</text><text x="310" y="210" text-anchor="middle" class="blk-s">256 x 13 bit</text>
+  <rect class="blk-m" x="370" y="160" width="100" height="62" rx="5"/><text x="420" y="180" text-anchor="middle" class="blk-t">T4</text><text x="420" y="196" text-anchor="middle" class="blk-s">L = 32</text><text x="420" y="210" text-anchor="middle" class="blk-s">256 x 13 bit</text>
+  <rect class="blk-m" x="40"  y="250" width="430" height="34" rx="5"/><text x="255" y="271" text-anchor="middle"><tspan class="blk-t">T0 base table</tspan> <tspan class="blk-s">1024 x 2-bit counters, index pc[11:2], no tag</tspan></text>
+ </g>
+ <path class="blk-l" d="M182,110 L182,135 L90,135 L90,158"/>
+ <path class="blk-l" d="M182,135 L200,135 L200,158"/>
+ <path class="blk-l" d="M182,135 L310,135 L310,158"/>
+ <path class="blk-l" d="M182,135 L420,135 L420,158"/>
+ <text x="300" y="130" class="blk-s">idx[1..4] (port B, read)</text>
+ <path class="blk-l" d="M30,68 L30,267 L38,267"/>
+ <text x="24" y="215" class="blk-s" text-anchor="middle" transform="rotate(-90 24 215)">pc[11:2]</text>
+ <!-- predict -->
+ <rect class="blk-b" x="40" y="320" width="430" height="70" rx="6"/>
+ <text x="255" y="338" text-anchor="middle" class="blk-t">tage_predict</text>
+ <text x="255" y="355" text-anchor="middle" class="blk-s">hit[i] = valid[i] &amp;&amp; stored_tag[i] == tag[i]</text>
+ <text x="255" y="370" text-anchor="middle" class="blk-s">prov = highest hit, alt = second-highest (0 = base)</text>
+ <text x="255" y="384" text-anchor="middle" class="blk-s">pred = prov ? T[prov].ctr[2] : T0.ctr[1]</text>
+ <path class="blk-l" d="M255,284 L255,318"/>
+ <path class="blk-l" d="M267,90 L480,90 L480,355 L472,355"/>
+ <text x="484" y="250" class="blk-s">tag[1..4]</text>
+ <path class="blk-l" d="M255,390 L255,420"/>
+ <text x="262" y="416" class="blk-t">pred, pred_meta</text>
+ <!-- update -->
+ <rect class="blk-u" x="560" y="160" width="185" height="124" rx="6"/>
+ <text x="652" y="178" text-anchor="middle" class="blk-t">tage_update</text>
+ <text x="568" y="196" class="blk-s">1. ctr +/-1 (provider or base)</text>
+ <text x="568" y="212" class="blk-s">2. u = 1 if pred ok, alt wrong</text>
+ <text x="568" y="228" class="blk-s">3. mispredict: allocate in the</text>
+ <text x="568" y="242" class="blk-s">   smallest j &gt; prov with u = 0,</text>
+ <text x="568" y="256" class="blk-s">   else clear u of all j &gt; prov</text>
+ <text x="568" y="274" class="blk-s">GHR shifts on the same edge</text>
+ <text x="580" y="70" class="blk-t">upd_meta, upd_pc,</text>
+ <text x="580" y="86" class="blk-t">upd_taken</text>
+ <path class="blk-l" d="M652,95 L652,158"/>
+ <path class="blk-lu" d="M558,200 L474,200"/>
+ <path class="blk-lu" d="M558,267 L474,267"/>
+ <text x="500" y="195" class="blk-s" fill="#2f855a">port A</text>
+ <text x="490" y="300" class="blk-s" fill="#2f855a">read-modify-write at meta.idx</text>
+</svg>
+<p>The core (<code>tage_top</code>) has two independent paths:</p>
+<ul>
+<li><b>Predict</b> (combinational): <code>pred_pc</code> goes through the hash, the five tables are
+  read through their read-only <i>port B</i>, and <code>tage_predict</code> picks the provider.
+  The result is <code>pred</code> plus a metadata bundle <code>pred_meta</code>.</li>
+<li><b>Update</b> (on the clock edge): the saved metadata, the PC and the real outcome go into
+  <code>tage_update</code>. Through <i>port A</i> it reads the current entries at the saved indices,
+  computes the new values and writes them back on the clock edge. The GHR shifts on the same edge.</li>
+</ul>
+
+<h3>Configuration (rtl/tage_pkg.sv)</h3>
+<table>
+<tr><th>Parameter</th><th>Value</th><th>Meaning</th></tr>
+<tr><td><code>NUM_T</code></td><td>4</td><td>number of tagged tables</td></tr>
+<tr><td><code>HIST_LEN</code></td><td>4, 8, 16, 32</td><td>history length of T1..T4</td></tr>
+<tr><td><code>GHR_W</code></td><td>32</td><td>global history width (newest outcome in bit 0)</td></tr>
+<tr><td><code>IDX_W</code> / <code>TAG_W</code></td><td>8 / 8</td><td>tagged table: 256 entries, 8-bit tag</td></tr>
+<tr><td><code>CTR_W</code></td><td>3</td><td>tagged counter 0..7, prediction = bit 2</td></tr>
+<tr><td><code>BASE_IDX_W</code> / <code>BASE_CTR_W</code></td><td>10 / 2</td><td>base table: 1024 entries of 2 bits, prediction = bit 1</td></tr>
+</table>
+
+<h3>Storage</h3>
+<p>T0 = 1024 &times; 2 = 2 048 bits; each tagged table = 256 &times; (1 + 8 + 3 + 1) = 3 328 bits;
+total = 2 048 + 4 &times; 3 328 = <b>15 360 bits</b>. The baselines are gshare with 4K entries
+(8 192 bits) and with 8K entries (16 384 bits, used on the board).</p>
+
+<h3>File map</h3>
+<table>
+<tr><th>File</th><th>Role</th></tr>
+<tr><td><code>rtl/tage_pkg.sv</code></td><td>parameters, <code>tage_meta_t</code>, <code>xor_fold()</code></td></tr>
+<tr><td><code>rtl/tage_table.sv</code></td><td>one table in distributed RAM (tagged or base form)</td></tr>
+<tr><td><code>rtl/tage_hash.sv</code></td><td>GHR and index/tag hashing</td></tr>
+<tr><td><code>rtl/tage_predict.sv</code></td><td>tag compare, provider/alternate, prediction</td></tr>
+<tr><td><code>rtl/tage_update.sv</code></td><td>update rules (counters, u bit, allocation)</td></tr>
+<tr><td><code>rtl/tage_top.sv</code></td><td>connects everything, reset sweep</td></tr>
+<tr><td><code>rtl/gshare.sv</code></td><td>baseline predictor</td></tr>
+<tr><td><code>rtl/board/*.sv</code></td><td>Nexys A7 wrapper: trace generator, counters, display, debounce, top</td></tr>
+<tr><td><code>tb/</code></td><td>reference model, main testbench, unit tests (simulation only)</td></tr>
+</table>
+
+<h2>3. Data formats and the life of one branch</h2>
+<h3>Tagged table entry</h3>
+
+<svg viewBox="0 0 560 70" class="fig small" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial" font-size="12">
+ <style>.ent-c{stroke:#2b5d8a;stroke-width:1.3}.ent-t{font-weight:bold}</style>
+ <rect class="ent-c" x="10"  y="10" width="50"  height="32" fill="#fde2e2"/><text x="35"  y="31" text-anchor="middle" class="ent-t">valid</text>
+ <rect class="ent-c" x="60"  y="10" width="260" height="32" fill="#e2ecfd"/><text x="190" y="31" text-anchor="middle" class="ent-t">tag[7:0]</text>
+ <rect class="ent-c" x="320" y="10" width="120" height="32" fill="#fff3cd"/><text x="380" y="31" text-anchor="middle" class="ent-t">ctr[2:0]</text>
+ <rect class="ent-c" x="440" y="10" width="50"  height="32" fill="#e2f5e6"/><text x="465" y="31" text-anchor="middle" class="ent-t">u</text>
+ <text x="35"  y="60" text-anchor="middle" font-size="10.5">bit 12</text>
+ <text x="190" y="60" text-anchor="middle" font-size="10.5">bits 11..4</text>
+ <text x="380" y="60" text-anchor="middle" font-size="10.5">bits 3..1 (ctr[2] = prediction)</text>
+ <text x="465" y="60" text-anchor="middle" font-size="10.5">bit 0</text>
+ <text x="500" y="31" font-size="11">= 13 bits</text>
+</svg>
+<ul>
+<li><b>valid</b>: the entry has been allocated. Without it, an empty entry whose stored tag happened
+  to match would give a false hit.</li>
+<li><b>tag</b>: identifies which branch/history the entry belongs to.</li>
+<li><b>ctr</b>: 3-bit saturating counter; values 4..7 predict taken, 0..3 not taken. New entries
+  start at the weakest value on the correct side (100 for taken, 011 for not taken).</li>
+<li><b>u</b>: "useful" bit, set when this entry was right and the alternate would have been wrong.
+  Entries with u = 1 are not replaced.</li>
+</ul>
+<p>The base table entry is just a 2-bit counter (values 2, 3 predict taken).</p>
+
+<h3>Metadata carried from predict to update</h3>
+<div class="code"><div class="ctitle">rtl/tage_pkg.sv &mdash; tage_meta_t (lines 36&ndash;43)</div><pre><span class="ln">  36</span>    <span class="kw">typedef</span> <span class="kw">struct</span> <span class="kw">packed</span> {
+<span class="ln">  37</span>      <span class="kw">logic</span> [PROV_W-1:0]         prov;      <span class="cm">// provider table (0 = base)</span>
+<span class="ln">  38</span>      <span class="kw">logic</span> [PROV_W-1:0]         alt;       <span class="cm">// alternate table (0 = base)</span>
+<span class="ln">  39</span>      <span class="kw">logic</span> [NUM_T:1][IDX_W-1:0] idx;       <span class="cm">// index used in each tagged table</span>
+<span class="ln">  40</span>      <span class="kw">logic</span> [NUM_T:1][TAG_W-1:0] tag;       <span class="cm">// tag computed for each tagged table</span>
+<span class="ln">  41</span>      <span class="kw">logic</span>                      pred;      <span class="cm">// final prediction</span>
+<span class="ln">  42</span>      <span class="kw">logic</span>                      alt_pred;  <span class="cm">// alternate prediction</span>
+<span class="ln">  43</span>    } tage_meta_t;</pre></div>
+<p>The update uses these <b>saved</b> values instead of recomputing the hashes. That keeps the update
+exact even though the GHR is about to change, and the update logic needs no hash circuit of its own.</p>
+
+<h3>The life of one branch (2 clock cycles)</h3>
+<table>
+<tr><th>Cycle</th><th>What happens</th></tr>
+<tr><td><b>A &mdash; predict</b></td><td>PC is applied. Hash, table read (port B), tag compare and provider
+ selection all happen combinationally. At the end of the cycle the board registers <code>pred</code>,
+ <code>pred_meta</code>, the PC and the actual outcome.</td></tr>
+<tr><td><b>B &mdash; update</b></td><td><code>upd_en = 1</code> with the registered values. Port A reads the
+ entries at <code>meta.idx</code>; <code>tage_update</code> computes new values; on the clock edge the
+ tables are written and the GHR shifts in the outcome. The mispredict counters count.</td></tr>
+</table>
+<p>Only one branch is in flight at a time, so the next prediction always sees a fully updated
+predictor (no speculative history is needed).</p>
+
+<h2>4. The predictor core, module by module</h2>
+<h3>4.1 tage_pkg &mdash; parameters and xor_fold</h3>
+<div class="code"><div class="ctitle">rtl/tage_pkg.sv  (lines 44&ndash;56)</div><pre><span class="ln">  44</span>  
+<span class="ln">  45</span>    <span class="cm">// XOR-fold the low `len` bits of h into IDX_W bits. Bit b of the slice lands</span>
+<span class="ln">  46</span>    <span class="cm">// in bit (b mod IDX_W) of the result, which is identical to XORing IDX_W-bit</span>
+<span class="ln">  47</span>    <span class="cm">// chunks with the last chunk zero-padded.</span>
+<span class="ln">  48</span>    <span class="kw">function</span> <span class="kw">automatic</span> <span class="kw">logic</span> [IDX_W-1:0] xor_fold(<span class="kw">input</span> <span class="kw">logic</span> [GHR_W-1:0] h,
+<span class="ln">  49</span>                                                  <span class="kw">input</span> <span class="kw">int</span> <span class="kw">unsigned</span>       len);
+<span class="ln">  50</span>      <span class="kw">logic</span> [IDX_W-1:0] f;
+<span class="ln">  51</span>      f = &#x27;0;
+<span class="ln">  52</span>      <span class="kw">for</span> (<span class="kw">int</span> <span class="kw">unsigned</span> b = 0; b &lt; GHR_W; b++) <span class="kw">begin</span>
+<span class="ln">  53</span>        <span class="kw">if</span> (b &lt; len) f[b % IDX_W] = f[b % IDX_W] ^ h[b];
+<span class="ln">  54</span>      <span class="kw">end</span>
+<span class="ln">  55</span>      <span class="kw">return</span> f;
+<span class="ln">  56</span>    <span class="kw">endfunction</span></pre></div>
+<p><b>What xor_fold does:</b> a table index is only 8 bits, but the history may be up to 32 bits.
+The history is cut into 8-bit chunks that are XORed together (the last chunk is zero-padded).
+The loop does this bit by bit: history bit <code>b</code> is XORed into result bit <code>b mod 8</code>.
+Because <code>len</code> is a constant for each table, synthesis turns the loop into a small XOR tree
+(at most four inputs per output bit).</p>
+<p>Example: <code>xor_fold(0x1234_5678, 32) = 0x78 ^ 0x56 ^ 0x34 ^ 0x12 = 0x08</code>;
+<code>xor_fold(0xFFFF_FFFF, 4) = 0x0F</code> (only 4 history bits are used).</p>
+
+<h3>4.2 tage_table &mdash; one table in LUTRAM</h3>
+<div class="code"><div class="ctitle">rtl/tage_table.sv  (lines 44&ndash;78)</div><pre><span class="ln">  44</span>    <span class="kw">localparam</span> <span class="kw">int</span> DEPTH = 1 &lt;&lt; IDX_W;
+<span class="ln">  45</span>    <span class="kw">localparam</span> <span class="kw">int</span> W     = (TAG_W &gt; 0) ? (TAG_W + CTR_W + 2) : CTR_W;
+<span class="ln">  46</span>  
+<span class="ln">  47</span>    (* ram_style = &quot;distributed&quot; *) <span class="kw">logic</span> [W-1:0] mem [0:DEPTH-1];
+<span class="ln">  48</span>  
+<span class="ln">  49</span>    <span class="kw">logic</span> [W-1:0] a_wdata, a_rdata, b_rdata;
+<span class="ln">  50</span>  
+<span class="ln">  51</span>    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk) <span class="kw">begin</span>
+<span class="ln">  52</span>      <span class="kw">if</span> (a_we) mem[a_addr] &lt;= a_wdata;
+<span class="ln">  53</span>    <span class="kw">end</span>
+<span class="ln">  54</span>  
+<span class="ln">  55</span>    <span class="kw">assign</span> a_rdata = mem[a_addr];
+<span class="ln">  56</span>    <span class="kw">assign</span> b_rdata = mem[b_addr];
+<span class="ln">  57</span>  
+<span class="ln">  58</span>    <span class="kw">if</span> (TAG_W &gt; 0) <span class="kw">begin</span> : g_tagged
+<span class="ln">  59</span>      <span class="kw">assign</span> a_wdata                            = {a_wvalid, a_wtag, a_wctr, a_wu};
+<span class="ln">  60</span>      <span class="kw">assign</span> {a_rvalid, a_rtag, a_rctr, a_ru}   = a_rdata;
+<span class="ln">  61</span>      <span class="kw">assign</span> {b_rvalid, b_rtag, b_rctr, b_ru}   = b_rdata;
+<span class="ln">  62</span>    <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span> : g_base
+<span class="ln">  63</span>      <span class="kw">assign</span> a_wdata  = a_wctr;
+<span class="ln">  64</span>      <span class="kw">assign</span> a_rctr   = a_rdata;
+<span class="ln">  65</span>      <span class="kw">assign</span> b_rctr   = b_rdata;
+<span class="ln">  66</span>      <span class="kw">assign</span> a_rvalid = 1&#x27;b1;
+<span class="ln">  67</span>      <span class="kw">assign</span> b_rvalid = 1&#x27;b1;
+<span class="ln">  68</span>      <span class="kw">assign</span> a_rtag   = &#x27;0;
+<span class="ln">  69</span>      <span class="kw">assign</span> b_rtag   = &#x27;0;
+<span class="ln">  70</span>      <span class="kw">assign</span> a_ru     = 1&#x27;b0;
+<span class="ln">  71</span>      <span class="kw">assign</span> b_ru     = 1&#x27;b0;
+<span class="ln">  72</span>      <span class="cm">// valid/tag/u write inputs carry no state in the untagged form</span>
+<span class="ln">  73</span>      <span class="cm">/* verilator lint_off UNUSEDSIGNAL */</span>
+<span class="ln">  74</span>      <span class="kw">logic</span> unused_base;
+<span class="ln">  75</span>      <span class="kw">assign</span> unused_base = a_wvalid ^ (^a_wtag) ^ a_wu;
+<span class="ln">  76</span>      <span class="cm">/* verilator lint_on UNUSEDSIGNAL */</span>
+<span class="ln">  77</span>    <span class="kw">end</span>
+<span class="ln">  78</span>  </pre></div>
+<ul>
+<li><b>Line 47</b>: <code>(* ram_style = "distributed" *)</code> tells Vivado to build the array from LUT-RAM.
+  Block RAM is not possible because the spec requires a <i>combinational</i> read, and BRAM can only
+  be read synchronously.</li>
+<li><b>Lines 51&ndash;53</b>: one synchronous write port. <b>Lines 55&ndash;56</b>: two asynchronous read ports.
+  This is exactly what an Artix-7 dual-port distributed RAM (RAM64X1D / RAM128X1D) provides:
+  port A = read/write, port B = read only.</li>
+<li><b>Generate block (lines 58&ndash;77)</b>: the same module serves as a tagged table (packs
+  <code>{valid, tag, ctr, u}</code>) or, with <code>TAG_W = 0</code>, as the base table (only the counter is
+  stored; valid reads as 1, u as 0).</li>
+<li>There is no reset: LUTRAM cannot be reset in hardware. Initialisation is done by the sweep in
+  <code>tage_top</code> (section 4.6).</li>
+</ul>
+
+<h3>4.3 tage_hash &mdash; global history and hashing</h3>
+<div class="code"><div class="ctitle">rtl/tage_hash.sv  (lines 31&ndash;43)</div><pre><span class="ln">  31</span>    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk) <span class="kw">begin</span>
+<span class="ln">  32</span>      <span class="kw">if</span> (rst)         ghr &lt;= &#x27;0;
+<span class="ln">  33</span>      <span class="kw">else</span> <span class="kw">if</span> (upd_en) ghr &lt;= {ghr[GHR_W-2:0], upd_taken};
+<span class="ln">  34</span>    <span class="kw">end</span>
+<span class="ln">  35</span>  
+<span class="ln">  36</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  37</span>      <span class="kw">logic</span> [IDX_W-1:0] f;
+<span class="ln">  38</span>      <span class="kw">for</span> (<span class="kw">int</span> i = 1; i &lt;= NUM_T; i++) <span class="kw">begin</span>
+<span class="ln">  39</span>        f      = xor_fold(ghr, <span class="kw">int</span>&#x27;(HIST_LEN[i]));
+<span class="ln">  40</span>        idx[i] = pc[IDX_W+1:2] ^ f;
+<span class="ln">  41</span>        tag[i] = pc[IDX_W+TAG_W+1:IDX_W+2] ^ {f[IDX_W-2:0], f[IDX_W-1]};
+<span class="ln">  42</span>      <span class="kw">end</span>
+<span class="ln">  43</span>    <span class="kw">end</span></pre></div>
+<ul>
+<li><b>Lines 31&ndash;34</b>: the GHR. On reset it becomes 0. On every update the new outcome is shifted
+  in at bit 0 (so bit 0 is always the newest outcome, bit 31 the oldest).</li>
+<li><b>Lines 36&ndash;43</b>: for each table <i>i</i>, fold its history slice into <code>f</code>, then
+  <code>idx = pc[9:2] ^ f</code> and <code>tag = pc[17:10] ^ {f[6:0], f[7]}</code>.</li>
+<li><code>pc[1:0]</code> is skipped because instructions are word aligned.</li>
+<li>The tag uses a <b>rotated</b> copy of <code>f</code>, so the tag and the index are not the same
+  function of history. Two histories that collide on the index are then likely to differ in the tag.</li>
+</ul>
+
+<h3>4.4 tage_predict &mdash; finding the provider</h3>
+<div class="code"><div class="ctitle">rtl/tage_predict.sv  (lines 28&ndash;67)</div><pre><span class="ln">  28</span>    <span class="kw">logic</span> [NUM_T:1]    hit;
+<span class="ln">  29</span>    <span class="kw">logic</span> [PROV_W-1:0] prov, alt;
+<span class="ln">  30</span>    <span class="kw">logic</span>              prov_pred, alt_pred;
+<span class="ln">  31</span>  
+<span class="ln">  32</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  33</span>      <span class="kw">for</span> (<span class="kw">int</span> i = 1; i &lt;= NUM_T; i++) hit[i] = t_valid[i] &amp;&amp; (t_tag[i] == tag[i]);
+<span class="ln">  34</span>    <span class="kw">end</span>
+<span class="ln">  35</span>  
+<span class="ln">  36</span>    <span class="cm">// Scanning upward: each hit demotes the current provider to alternate.</span>
+<span class="ln">  37</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  38</span>      prov = &#x27;0;
+<span class="ln">  39</span>      alt  = &#x27;0;
+<span class="ln">  40</span>      <span class="kw">for</span> (<span class="kw">int</span> i = 1; i &lt;= NUM_T; i++) <span class="kw">begin</span>
+<span class="ln">  41</span>        <span class="kw">if</span> (hit[i]) <span class="kw">begin</span>
+<span class="ln">  42</span>          alt  = prov;
+<span class="ln">  43</span>          prov = PROV_W&#x27;(i);
+<span class="ln">  44</span>        <span class="kw">end</span>
+<span class="ln">  45</span>      <span class="kw">end</span>
+<span class="ln">  46</span>    <span class="kw">end</span>
+<span class="ln">  47</span>  
+<span class="ln">  48</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  49</span>      prov_pred = base_ctr[BASE_CTR_W-1];
+<span class="ln">  50</span>      alt_pred  = base_ctr[BASE_CTR_W-1];
+<span class="ln">  51</span>      <span class="kw">for</span> (<span class="kw">int</span> i = 1; i &lt;= NUM_T; i++) <span class="kw">begin</span>
+<span class="ln">  52</span>        <span class="kw">if</span> (prov == PROV_W&#x27;(i)) prov_pred = t_ctr[i][CTR_W-1];
+<span class="ln">  53</span>        <span class="kw">if</span> (alt  == PROV_W&#x27;(i)) alt_pred  = t_ctr[i][CTR_W-1];
+<span class="ln">  54</span>      <span class="kw">end</span>
+<span class="ln">  55</span>    <span class="kw">end</span>
+<span class="ln">  56</span>  
+<span class="ln">  57</span>    <span class="kw">assign</span> pred = prov_pred;
+<span class="ln">  58</span>  
+<span class="ln">  59</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  60</span>      meta.prov     = prov;
+<span class="ln">  61</span>      meta.alt      = alt;
+<span class="ln">  62</span>      meta.idx      = idx;
+<span class="ln">  63</span>      meta.tag      = tag;
+<span class="ln">  64</span>      meta.pred     = prov_pred;
+<span class="ln">  65</span>      meta.alt_pred = alt_pred;
+<span class="ln">  66</span>    <span class="kw">end</span>
+<span class="ln">  67</span>  </pre></div>
+<ul>
+<li><b>Lines 32&ndash;35</b>: a table hits if its entry is valid and the stored tag equals the computed tag.</li>
+<li><b>Lines 37&ndash;46</b>: the loop goes from T1 up to T4. Each time a table hits, the previous
+  provider becomes the alternate and this table becomes the provider. At the end,
+  <code>prov</code> is the highest hitting table and <code>alt</code> the second highest (0 means the base table).</li>
+<li><b>Lines 48&ndash;55</b>: the predictions are the MSB of the selected counter: bit 2 of a 3-bit tagged
+  counter, or bit 1 of the 2-bit base counter.</li>
+<li><b>Lines 59&ndash;66</b>: everything the update will need is packed into <code>meta</code>.</li>
+<li>The alternate prediction is not the output; it is only needed for the u-bit rule (rule 2).</li>
+</ul>
+
+<h3>4.5 tage_update &mdash; the learning rules</h3>
+<div class="code"><div class="ctitle">rtl/tage_update.sv  (lines 40&ndash;106)</div><pre><span class="ln">  40</span>    <span class="kw">function</span> <span class="kw">automatic</span> <span class="kw">logic</span> [CTR_W-1:0] sat_tag(<span class="kw">input</span> <span class="kw">logic</span> [CTR_W-1:0] c, <span class="kw">input</span> <span class="kw">logic</span> t);
+<span class="ln">  41</span>      <span class="kw">if</span> (t) <span class="kw">return</span> (&amp;c)       ? c : c + 1&#x27;b1;
+<span class="ln">  42</span>      <span class="kw">else</span>   <span class="kw">return</span> (c == &#x27;0)  ? c : c - 1&#x27;b1;
+<span class="ln">  43</span>    <span class="kw">endfunction</span>
+<span class="ln">  44</span>  
+<span class="ln">  45</span>    <span class="kw">function</span> <span class="kw">automatic</span> <span class="kw">logic</span> [BASE_CTR_W-1:0] sat_base(<span class="kw">input</span> <span class="kw">logic</span> [BASE_CTR_W-1:0] c, <span class="kw">input</span> <span class="kw">logic</span> t);
+<span class="ln">  46</span>      <span class="kw">if</span> (t) <span class="kw">return</span> (&amp;c)       ? c : c + 1&#x27;b1;
+<span class="ln">  47</span>      <span class="kw">else</span>   <span class="kw">return</span> (c == &#x27;0)  ? c : c - 1&#x27;b1;
+<span class="ln">  48</span>    <span class="kw">endfunction</span>
+<span class="ln">  49</span>  
+<span class="ln">  50</span>    <span class="kw">logic</span>              mispred, set_u, any_free;
+<span class="ln">  51</span>    <span class="kw">logic</span> [NUM_T:1]    above, free;
+<span class="ln">  52</span>    <span class="kw">logic</span> [PROV_W-1:0] alloc;
+<span class="ln">  53</span>  
+<span class="ln">  54</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  55</span>      mispred = (meta.pred != taken);
+<span class="ln">  56</span>      set_u   = (meta.pred == taken) &amp;&amp; (meta.alt_pred != taken);
+<span class="ln">  57</span>  
+<span class="ln">  58</span>      <span class="kw">for</span> (<span class="kw">int</span> i = 1; i &lt;= NUM_T; i++) <span class="kw">begin</span>
+<span class="ln">  59</span>        above[i] = (PROV_W&#x27;(i) &gt; meta.prov);
+<span class="ln">  60</span>        free[i]  = above[i] &amp;&amp; !r_u[i];
+<span class="ln">  61</span>      <span class="kw">end</span>
+<span class="ln">  62</span>      any_free = |free;
+<span class="ln">  63</span>  
+<span class="ln">  64</span>      <span class="cm">// smallest free table</span>
+<span class="ln">  65</span>      alloc = &#x27;0;
+<span class="ln">  66</span>      <span class="kw">for</span> (<span class="kw">int</span> i = NUM_T; i &gt;= 1; i--) <span class="kw">begin</span>
+<span class="ln">  67</span>        <span class="kw">if</span> (free[i]) alloc = PROV_W&#x27;(i);
+<span class="ln">  68</span>      <span class="kw">end</span>
+<span class="ln">  69</span>    <span class="kw">end</span>
+<span class="ln">  70</span>  
+<span class="ln">  71</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  72</span>      base_we   = upd_en &amp;&amp; (meta.prov == &#x27;0);
+<span class="ln">  73</span>      base_wctr = sat_base(base_ctr, taken);
+<span class="ln">  74</span>  
+<span class="ln">  75</span>      <span class="kw">for</span> (<span class="kw">int</span> i = 1; i &lt;= NUM_T; i++) <span class="kw">begin</span>
+<span class="ln">  76</span>        <span class="cm">// default: write back what is stored</span>
+<span class="ln">  77</span>        we[i]      = 1&#x27;b0;
+<span class="ln">  78</span>        w_valid[i] = r_valid[i];
+<span class="ln">  79</span>        w_tag[i]   = r_tag[i];
+<span class="ln">  80</span>        w_ctr[i]   = r_ctr[i];
+<span class="ln">  81</span>        w_u[i]     = r_u[i];
+<span class="ln">  82</span>  
+<span class="ln">  83</span>        <span class="kw">if</span> (upd_en) <span class="kw">begin</span>
+<span class="ln">  84</span>          <span class="kw">if</span> (meta.prov == PROV_W&#x27;(i)) <span class="kw">begin</span>
+<span class="ln">  85</span>            <span class="cm">// rules 1 + 2 on the provider entry</span>
+<span class="ln">  86</span>            we[i]    = 1&#x27;b1;
+<span class="ln">  87</span>            w_ctr[i] = sat_tag(r_ctr[i], taken);
+<span class="ln">  88</span>            <span class="kw">if</span> (set_u) w_u[i] = 1&#x27;b1;
+<span class="ln">  89</span>          <span class="kw">end</span> <span class="kw">else</span> <span class="kw">if</span> (mispred &amp;&amp; above[i]) <span class="kw">begin</span>
+<span class="ln">  90</span>            <span class="cm">// rule 3 on the longer-history tables</span>
+<span class="ln">  91</span>            <span class="kw">if</span> (any_free) <span class="kw">begin</span>
+<span class="ln">  92</span>              <span class="kw">if</span> (alloc == PROV_W&#x27;(i)) <span class="kw">begin</span>
+<span class="ln">  93</span>                we[i]      = 1&#x27;b1;
+<span class="ln">  94</span>                w_valid[i] = 1&#x27;b1;
+<span class="ln">  95</span>                w_tag[i]   = meta.tag[i];
+<span class="ln">  96</span>                w_ctr[i]   = taken ? ALLOC_CTR_T : ALLOC_CTR_NT;
+<span class="ln">  97</span>                w_u[i]     = 1&#x27;b0;
+<span class="ln">  98</span>              <span class="kw">end</span>
+<span class="ln">  99</span>            <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln"> 100</span>              we[i]  = 1&#x27;b1;
+<span class="ln"> 101</span>              w_u[i] = 1&#x27;b0;
+<span class="ln"> 102</span>            <span class="kw">end</span>
+<span class="ln"> 103</span>          <span class="kw">end</span>
+<span class="ln"> 104</span>        <span class="kw">end</span>
+<span class="ln"> 105</span>      <span class="kw">end</span>
+<span class="ln"> 106</span>    <span class="kw">end</span></pre></div>
+
+<p>How the code implements the three rules:</p>
+<table>
+<tr><th>Rule</th><th>Condition</th><th>Effect</th><th>Code</th></tr>
+<tr><td>1 Counter</td><td>always</td><td>provider counter +1/&minus;1, saturating at 0..7; if there is no provider,
+ the base counter +1/&minus;1, saturating at 0..3</td><td><code>sat_tag</code>, <code>sat_base</code>, <code>base_we</code></td></tr>
+<tr><td>2 Useful</td><td>provider &gt; 0, prediction correct, alternate wrong</td><td>provider u = 1</td><td><code>set_u</code></td></tr>
+<tr><td>3 Allocate</td><td>prediction wrong and provider &lt; 4</td><td>if a longer table has u = 0 at its index: write a
+ new entry in the <b>smallest</b> such table. Otherwise clear u in all longer tables, so a slot frees up later.</td>
+ <td><code>above</code>, <code>free</code>, <code>alloc</code>, <code>any_free</code></td></tr>
+</table>
+<ul>
+<li><b>Default write-back</b>: each table output starts as "write back what was read". Only the fields a rule
+  changes are overwritten, so for example u-clearing keeps valid, tag and ctr unchanged.</li>
+<li><b>"Smallest free table"</b>: the loop runs from T4 <i>down</i> to T1 and overwrites <code>alloc</code> on every
+  free table, so the last assignment, the smallest index, wins. This is a simple priority encoder.</li>
+<li><b>No conflicts</b>: the provider table is written by rules 1/2, and only tables <i>above</i> the provider are
+  written by rule 3. So each table receives at most one write per update.</li>
+<li>When the provider is T4 there is no longer table, so rule 3 does nothing (the <code>above</code> mask is empty).</li>
+</ul>
+
+<h3>4.6 tage_top &mdash; wiring and the reset sweep</h3>
+<div class="code"><div class="ctitle">rtl/tage_top.sv &mdash; reset sweep (lines 41&ndash;57)</div><pre><span class="ln">  41</span>    <span class="kw">logic</span> [BASE_IDX_W-1:0] init_cnt;
+<span class="ln">  42</span>    <span class="kw">logic</span>                  init_busy;
+<span class="ln">  43</span>  
+<span class="ln">  44</span>    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk) <span class="kw">begin</span>
+<span class="ln">  45</span>      <span class="kw">if</span> (rst) <span class="kw">begin</span>
+<span class="ln">  46</span>        init_cnt  &lt;= &#x27;0;
+<span class="ln">  47</span>        init_busy &lt;= 1&#x27;b1;
+<span class="ln">  48</span>      <span class="kw">end</span> <span class="kw">else</span> <span class="kw">if</span> (init_busy) <span class="kw">begin</span>
+<span class="ln">  49</span>        init_cnt &lt;= init_cnt + 1&#x27;b1;
+<span class="ln">  50</span>        <span class="kw">if</span> (&amp;init_cnt) init_busy &lt;= 1&#x27;b0;
+<span class="ln">  51</span>      <span class="kw">end</span>
+<span class="ln">  52</span>    <span class="kw">end</span>
+<span class="ln">  53</span>  
+<span class="ln">  54</span>    <span class="kw">assign</span> ready = ~init_busy;
+<span class="ln">  55</span>  
+<span class="ln">  56</span>    <span class="kw">logic</span> upd_go;
+<span class="ln">  57</span>    <span class="kw">assign</span> upd_go = upd_en &amp; ~init_busy;</pre></div>
+<p>LUTRAM cannot be reset, so after <code>rst</code> a 10-bit counter walks through all 1024 addresses.
+For those 1024 cycles every table is written with its power-on value: tagged entries get
+<code>valid=0, u=0, ctr=011</code>, base counters get <code>01</code>. The tagged tables only have 256 entries,
+so they are simply written four times. While the sweep runs, <code>ready</code> is 0 and
+<code>upd_go</code> blocks any update. After a reset the predictor is therefore in exactly the same
+state as after power-on, and runs are reproducible.</p>
+<div class="code"><div class="ctitle">rtl/tage_top.sv &mdash; one tagged table instance (lines 95&ndash;118)</div><pre><span class="ln">  95</span>    <span class="kw">for</span> (<span class="kw">genvar</span> i = 1; i &lt;= NUM_T; i++) <span class="kw">begin</span> : g_tbl
+<span class="ln">  96</span>      tage_table #(
+<span class="ln">  97</span>        .IDX_W (IDX_W),
+<span class="ln">  98</span>        .TAG_W (TAG_W),
+<span class="ln">  99</span>        .CTR_W (CTR_W)
+<span class="ln"> 100</span>      ) u_tbl (
+<span class="ln"> 101</span>        .clk      (clk),
+<span class="ln"> 102</span>        .a_we     (init_busy | u_we[i]),
+<span class="ln"> 103</span>        .a_addr   (init_busy ? init_cnt[IDX_W-1:0] : upd_meta.idx[i]),
+<span class="ln"> 104</span>        .a_wvalid (init_busy ? 1&#x27;b0                 : u_wvalid[i]),
+<span class="ln"> 105</span>        .a_wtag   (init_busy ? {TAG_W{1&#x27;b0}}        : u_wtag[i]),
+<span class="ln"> 106</span>        .a_wctr   (init_busy ? TAG_CTR_INIT         : u_wctr[i]),
+<span class="ln"> 107</span>        .a_wu     (init_busy ? 1&#x27;b0                 : u_wu[i]),
+<span class="ln"> 108</span>        .a_rvalid (a_valid[i]),
+<span class="ln"> 109</span>        .a_rtag   (a_tag[i]),
+<span class="ln"> 110</span>        .a_rctr   (a_ctr[i]),
+<span class="ln"> 111</span>        .a_ru     (a_u[i]),
+<span class="ln"> 112</span>        .b_addr   (h_idx[i]),
+<span class="ln"> 113</span>        .b_rvalid (b_valid[i]),
+<span class="ln"> 114</span>        .b_rtag   (b_tag[i]),
+<span class="ln"> 115</span>        .b_rctr   (b_ctr[i]),
+<span class="ln"> 116</span>        .b_ru     (b_u[i])
+<span class="ln"> 117</span>      );
+<span class="ln"> 118</span>    <span class="kw">end</span></pre></div>
+<p>Port A is shared between the sweep and the update logic through simple multiplexers on
+<code>init_busy</code>. Port B always takes the hash index, so prediction never interferes with update.</p>
+
+<h3>4.7 gshare &mdash; the baseline</h3>
+<div class="code"><div class="ctitle">rtl/gshare.sv  (lines 33&ndash;71)</div><pre><span class="ln">  33</span>    (* ram_style = &quot;distributed&quot; *) <span class="kw">logic</span> [1:0] pht [0:(1&lt;&lt;K)-1];
+<span class="ln">  34</span>  
+<span class="ln">  35</span>    <span class="kw">logic</span> [K-1:0] ghr, init_cnt, p_idx, u_idx;
+<span class="ln">  36</span>    <span class="kw">logic</span>         init_busy, upd_go;
+<span class="ln">  37</span>    <span class="kw">logic</span> [1:0]   u_ctr, u_new;
+<span class="ln">  38</span>  
+<span class="ln">  39</span>    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk) <span class="kw">begin</span>
+<span class="ln">  40</span>      <span class="kw">if</span> (rst) <span class="kw">begin</span>
+<span class="ln">  41</span>        init_cnt  &lt;= &#x27;0;
+<span class="ln">  42</span>        init_busy &lt;= 1&#x27;b1;
+<span class="ln">  43</span>      <span class="kw">end</span> <span class="kw">else</span> <span class="kw">if</span> (init_busy) <span class="kw">begin</span>
+<span class="ln">  44</span>        init_cnt &lt;= init_cnt + 1&#x27;b1;
+<span class="ln">  45</span>        <span class="kw">if</span> (&amp;init_cnt) init_busy &lt;= 1&#x27;b0;
+<span class="ln">  46</span>      <span class="kw">end</span>
+<span class="ln">  47</span>    <span class="kw">end</span>
+<span class="ln">  48</span>  
+<span class="ln">  49</span>    <span class="kw">assign</span> ready  = ~init_busy;
+<span class="ln">  50</span>    <span class="kw">assign</span> upd_go = upd_en &amp; ~init_busy;
+<span class="ln">  51</span>  
+<span class="ln">  52</span>    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk) <span class="kw">begin</span>
+<span class="ln">  53</span>      <span class="kw">if</span> (rst)         ghr &lt;= &#x27;0;
+<span class="ln">  54</span>      <span class="kw">else</span> <span class="kw">if</span> (upd_go) ghr &lt;= {ghr[K-2:0], upd_taken};
+<span class="ln">  55</span>    <span class="kw">end</span>
+<span class="ln">  56</span>  
+<span class="ln">  57</span>    <span class="kw">assign</span> p_idx = pc[K+1:2] ^ ghr;
+<span class="ln">  58</span>    <span class="kw">assign</span> u_idx = init_busy ? init_cnt : (upd_pc[K+1:2] ^ ghr);
+<span class="ln">  59</span>    <span class="kw">assign</span> u_ctr = pht[u_idx];
+<span class="ln">  60</span>  
+<span class="ln">  61</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  62</span>      <span class="kw">if</span> (upd_taken) u_new = (u_ctr == 2&#x27;b11) ? u_ctr : u_ctr + 2&#x27;b01;
+<span class="ln">  63</span>      <span class="kw">else</span>           u_new = (u_ctr == 2&#x27;b00) ? u_ctr : u_ctr - 2&#x27;b01;
+<span class="ln">  64</span>    <span class="kw">end</span>
+<span class="ln">  65</span>  
+<span class="ln">  66</span>    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk) <span class="kw">begin</span>
+<span class="ln">  67</span>      <span class="kw">if</span> (init_busy | upd_go) pht[u_idx] &lt;= init_busy ? 2&#x27;b01 : u_new;
+<span class="ln">  68</span>    <span class="kw">end</span>
+<span class="ln">  69</span>  
+<span class="ln">  70</span>    <span class="kw">assign</span> pred = pht[p_idx][1];
+<span class="ln">  71</span>  </pre></div>
+<p>gshare uses the same ideas in a smaller form: one counter table indexed by <code>pc ^ ghr</code>, the same
+kind of reset sweep (2<super>K</super> cycles), and the same 2-bit counter update. The tests use K = 12 (4K entries)
+and K = 13 (8K entries); the board uses K = 13 so both predictors have roughly the same storage.</p>
+
+<h2>5. The board wrapper (Nexys A7)</h2>
+<p><code>nexys7_top</code> turns the predictor into a self-contained demo. No processor is needed:
+a hardware trace generator produces branches, TAGE and gshare predict them, and the mispredict
+counts appear on the 7-segment display.</p>
+
+<svg viewBox="0 0 700 170" class="fig" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial" font-size="12">
+ <defs><marker id="a2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#333"/></marker></defs>
+ <style>.fsm-s{fill:#eef4fb;stroke:#2b5d8a;stroke-width:1.4}.fsm-l{stroke:#333;stroke-width:1.3;fill:none;marker-end:url(#a2)}.fsm-t{font-weight:bold}.fsm-x{font-size:10.5px;fill:#444}</style>
+ <ellipse class="fsm-s" cx="60"  cy="70" rx="48" ry="24"/><text x="60"  y="74" text-anchor="middle" class="fsm-t">S_IDLE</text>
+ <ellipse class="fsm-s" cx="210" cy="70" rx="48" ry="24"/><text x="210" y="74" text-anchor="middle" class="fsm-t">S_INIT</text>
+ <ellipse class="fsm-s" cx="370" cy="70" rx="48" ry="24"/><text x="370" y="74" text-anchor="middle" class="fsm-t">S_PRED</text>
+ <ellipse class="fsm-s" cx="520" cy="70" rx="48" ry="24"/><text x="520" y="74" text-anchor="middle" class="fsm-t">S_UPD</text>
+ <ellipse class="fsm-s" cx="370" cy="145" rx="48" ry="20"/><text x="370" y="149" text-anchor="middle" class="fsm-t">S_DONE</text>
+ <path class="fsm-l" d="M108,70 L160,70"/><text x="134" y="60" text-anchor="middle" class="fsm-x">BTNC</text>
+ <path class="fsm-l" d="M258,70 L320,70"/><text x="289" y="60" text-anchor="middle" class="fsm-x">ready</text>
+ <path class="fsm-l" d="M418,62 L470,62"/><text x="444" y="52" text-anchor="middle" class="fsm-x">register pred+meta</text>
+ <path class="fsm-l" d="M472,80 L420,80"/><text x="446" y="96" text-anchor="middle" class="fsm-x">update, count</text>
+ <path class="fsm-l" d="M370,94 L370,123"/><text x="376" y="113" class="fsm-x">done (40000)</text>
+ <path class="fsm-l" d="M322,145 L210,145 L210,96"/><text x="260" y="140" text-anchor="middle" class="fsm-x">BTNC</text>
+ <text x="600" y="40" class="fsm-x">2 clocks per branch:</text>
+ <text x="600" y="55" class="fsm-x">PRED = cycle A</text>
+ <text x="600" y="70" class="fsm-x">UPD  = cycle B</text>
+ <text x="150" y="20" class="fsm-x">BTNC also pulses soft_rst: predictors, trace and counters are re-initialised</text>
+</svg>
+<div class="code"><div class="ctitle">rtl/board/nexys7_top.sv &mdash; run control FSM (lines 101&ndash;140)</div><pre><span class="ln"> 101</span>    <span class="kw">always_ff</span> @(<span class="kw">posedge</span> clk) <span class="kw">begin</span>
+<span class="ln"> 102</span>      <span class="kw">if</span> (rst) <span class="kw">begin</span>
+<span class="ln"> 103</span>        state    &lt;= S_IDLE;
+<span class="ln"> 104</span>        soft_rst &lt;= 1&#x27;b0;
+<span class="ln"> 105</span>        mode_q   &lt;= 2&#x27;d0;
+<span class="ln"> 106</span>        p_tage   &lt;= 1&#x27;b0;
+<span class="ln"> 107</span>        p_gs     &lt;= 1&#x27;b0;
+<span class="ln"> 108</span>        p_taken  &lt;= 1&#x27;b0;
+<span class="ln"> 109</span>        p_pc     &lt;= &#x27;0;
+<span class="ln"> 110</span>        p_meta   &lt;= &#x27;0;
+<span class="ln"> 111</span>      <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln"> 112</span>        soft_rst &lt;= 1&#x27;b0;
+<span class="ln"> 113</span>        <span class="kw">case</span> (state)
+<span class="ln"> 114</span>          S_IDLE, S_DONE: <span class="kw">begin</span>
+<span class="ln"> 115</span>            <span class="kw">if</span> (start) <span class="kw">begin</span>
+<span class="ln"> 116</span>              soft_rst &lt;= 1&#x27;b1;
+<span class="ln"> 117</span>              mode_q   &lt;= sw_s2;
+<span class="ln"> 118</span>              state    &lt;= S_INIT;
+<span class="ln"> 119</span>            <span class="kw">end</span>
+<span class="ln"> 120</span>          <span class="kw">end</span>
+<span class="ln"> 121</span>          S_INIT: <span class="kw">begin</span>
+<span class="ln"> 122</span>            <span class="kw">if</span> (!soft_rst &amp;&amp; tage_ready &amp;&amp; gs_ready &amp;&amp; tg_valid) state &lt;= S_PRED;
+<span class="ln"> 123</span>          <span class="kw">end</span>
+<span class="ln"> 124</span>          S_PRED: <span class="kw">begin</span>
+<span class="ln"> 125</span>            <span class="kw">if</span> (done) <span class="kw">begin</span>
+<span class="ln"> 126</span>              state &lt;= S_DONE;
+<span class="ln"> 127</span>            <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln"> 128</span>              p_tage  &lt;= tage_pred;
+<span class="ln"> 129</span>              p_meta  &lt;= tage_meta;
+<span class="ln"> 130</span>              p_gs    &lt;= gs_pred;
+<span class="ln"> 131</span>              p_pc    &lt;= tg_pc;
+<span class="ln"> 132</span>              p_taken &lt;= tg_taken;
+<span class="ln"> 133</span>              state   &lt;= S_UPD;
+<span class="ln"> 134</span>            <span class="kw">end</span>
+<span class="ln"> 135</span>          <span class="kw">end</span>
+<span class="ln"> 136</span>          S_UPD:   state &lt;= S_PRED;
+<span class="ln"> 137</span>          <span class="kw">default</span>: state &lt;= S_IDLE;
+<span class="ln"> 138</span>        <span class="kw">endcase</span>
+<span class="ln"> 139</span>      <span class="kw">end</span>
+<span class="ln"> 140</span>    <span class="kw">end</span></pre></div>
+<ul>
+<li><b>S_IDLE / S_DONE</b>: wait for BTNC. On a press, latch SW[1:0] as the trace mode and pulse
+  <code>soft_rst</code>. That re-initialises the predictors, the trace generator and the counters, so
+  every run starts from the power-on state and gives the same numbers.</li>
+<li><b>S_INIT</b>: wait until both predictors have finished their reset sweep.</li>
+<li><b>S_PRED</b> (cycle A): register the TAGE prediction, metadata, gshare prediction, PC and outcome.</li>
+<li><b>S_UPD</b> (cycle B): <code>in_upd = 1</code> drives the update of both predictors, the counters and the
+  trace generator. After 40 000 branches <code>done</code> stops the run.</li>
+</ul>
+
+<h3>Other board modules</h3>
+<table>
+<tr><th>Module</th><th>What it does</th></tr>
+<tr><td><code>hw_trace_gen</code></td><td>Generates the branch stream. A 32-bit xorshift LFSR provides deterministic
+ randomness. Mode 0: loop (6 taken, 1 not taken). Mode 1: alternating. Mode 2: branch A is random,
+ 15 always-taken branches follow, then branch B copies A's outcome (distance 16). Mode 3: 8 PCs, 90 % taken.
+ The same module is used in the testbench, so simulated and on-board numbers are identical.</td></tr>
+<tr><td><code>perf_counters</code></td><td>16-bit mispredict counters for TAGE and gshare plus a branch counter;
+ they stop at 40 000 branches and raise <code>done</code>.</td></tr>
+<tr><td><code>seg7_driver</code></td><td>Multiplexes 8 hex digits: each digit is on for 12 500 clocks (125 &micro;s),
+ so the full display refreshes at 1 kHz. Left 4 digits = TAGE, right 4 = gshare.</td></tr>
+<tr><td><code>debounce</code></td><td>Two flip-flop synchronizer (ASYNC_REG) plus a counter. The output changes only
+ after the input has been stable for 2<super>20</super> clocks (about 10 ms). Its flip-flops have an FPGA
+ initial value of 0. On CPU_RESETN that gives a power-on reset: the design starts in reset until the
+ button has been seen released for 10 ms.</td></tr>
+</table>
+
+<div class="code"><div class="ctitle">rtl/board/hw_trace_gen.sv &mdash; branch selection per mode (lines 62&ndash;89)</div><pre><span class="ln">  62</span>    <span class="kw">always_comb</span> <span class="kw">begin</span>
+<span class="ln">  63</span>      <span class="kw">case</span> (mode)
+<span class="ln">  64</span>        2&#x27;d0: <span class="kw">begin</span>
+<span class="ln">  65</span>          pc    = LOOP_PC;
+<span class="ln">  66</span>          taken = (pos != 6&#x27;d6);
+<span class="ln">  67</span>        <span class="kw">end</span>
+<span class="ln">  68</span>        2&#x27;d1: <span class="kw">begin</span>
+<span class="ln">  69</span>          pc    = ALT_PC;
+<span class="ln">  70</span>          taken = (pos == 6&#x27;d0);
+<span class="ln">  71</span>        <span class="kw">end</span>
+<span class="ln">  72</span>        2&#x27;d2: <span class="kw">begin</span>
+<span class="ln">  73</span>          <span class="kw">if</span> (pos == 6&#x27;d0) <span class="kw">begin</span>
+<span class="ln">  74</span>            pc    = A_PC;
+<span class="ln">  75</span>            taken = lfsr[0];
+<span class="ln">  76</span>          <span class="kw">end</span> <span class="kw">else</span> <span class="kw">if</span> (pos == 6&#x27;(CORR_DIST)) <span class="kw">begin</span>
+<span class="ln">  77</span>            pc    = B_PC;
+<span class="ln">  78</span>            taken = a_out;
+<span class="ln">  79</span>          <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln">  80</span>            pc    = FILL_PC + {24&#x27;d0, pos, 2&#x27;b00};
+<span class="ln">  81</span>            taken = 1&#x27;b1;
+<span class="ln">  82</span>          <span class="kw">end</span>
+<span class="ln">  83</span>        <span class="kw">end</span>
+<span class="ln">  84</span>        <span class="kw">default</span>: <span class="kw">begin</span>
+<span class="ln">  85</span>          pc    = RND_PC + {23&#x27;d0, lfsr[18:16], 6&#x27;d0};
+<span class="ln">  86</span>          taken = (lfsr[15:0] &lt; BIAS90);
+<span class="ln">  87</span>        <span class="kw">end</span>
+<span class="ln">  88</span>      <span class="kw">endcase</span>
+<span class="ln">  89</span>    <span class="kw">end</span></pre></div>
+
+<h3>Controls and display</h3>
+<table>
+<tr><th>Input / output</th><th>Use</th></tr>
+<tr><td>CPU_RESETN</td><td>reset everything (power-on state)</td></tr>
+<tr><td>SW[1:0]</td><td>trace mode, read when BTNC is pressed</td></tr>
+<tr><td>BTNC</td><td>start a run of 40 000 branches (takes about 1 ms)</td></tr>
+<tr><td>LED[0] / [1] / [2] / [3]</td><td>done / last TAGE prediction / last outcome / last TAGE mispredict</td></tr>
+<tr><td>LED[5:4], LED[6], LED[7]</td><td>current mode, running, predictors initialising</td></tr>
+<tr><td>LED[15:8]</td><td>progress bar (one LED per 5 000 branches)</td></tr>
+<tr><td>7-segment</td><td><code>TTTT GGGG</code>: TAGE mispredicts | gshare mispredicts, in hex</td></tr>
+</table>
+<table>
+<tr><th>SW[1:0]</th><th>Trace</th><th>Display after a run</th><th>TAGE</th><th>gshare-8K</th></tr>
+<tr><td>00</td><td>loop, period 7</td><td><code>0004 0011</code></td><td>4</td><td>17</td></tr>
+<tr><td>01</td><td>alternating</td><td><code>0005 0007</code></td><td>5</td><td>7</td></tr>
+<tr><td>10</td><td>correlated, distance 16</td><td><code>04F7 0984</code></td><td>1 271</td><td>2 436</td></tr>
+<tr><td>11</td><td>random, 90 % taken</td><td><code>1863 181D</code></td><td>6 243</td><td>6 173</td></tr>
+</table>
+<p>All pin locations come from Digilent's <code>Nexys-A7-100T-Master.xdc</code>; a script cross-checked all
+51 ports against it.</p>
+
+<h2>6. Worked example: how TAGE learns a correlation gshare cannot see</h2>
+<p>Trace <i>corr_d16</i> repeats a group of 17 branches: branch <b>A</b> (random), 15 always-taken
+filler branches, then branch <b>B</b> with the same outcome as A. When B is predicted, its outcome
+is in GHR bit 15 (16 branches ago), and bits 0..14 are all 1 (the fillers).</p>
+
+<h3>Step 1 &mdash; the hashes for branch B (pc = 0x00006F88)</h3>
+<table>
+<tr><th>A was</th><th>GHR[15:0]</th><th>Table</th><th>L</th><th>fold f</th><th>idx</th><th>tag</th></tr>
+<tr><td>1</td><td><code>0xFFFF</code></td><td>T1</td><td>4</td><td><code>0x0F</code></td><td><code>0xED</code></td><td><code>0x05</code></td></tr><tr><td>1</td><td><code>0xFFFF</code></td><td>T2</td><td>8</td><td><code>0xFF</code></td><td><code>0x1D</code></td><td><code>0xE4</code></td></tr><tr><td>1</td><td><code>0xFFFF</code></td><td>T3</td><td>16</td><td><code>0x00</code></td><td><code>0xE2</code></td><td><code>0x1B</code></td></tr><tr><td>0</td><td><code>0x7FFF</code></td><td>T1</td><td>4</td><td><code>0x0F</code></td><td><code>0xED</code></td><td><code>0x05</code></td></tr><tr><td>0</td><td><code>0x7FFF</code></td><td>T2</td><td>8</td><td><code>0xFF</code></td><td><code>0x1D</code></td><td><code>0xE4</code></td></tr><tr><td>0</td><td><code>0x7FFF</code></td><td>T3</td><td>16</td><td><code>0x80</code></td><td><code>0x62</code></td><td><code>0x1A</code></td></tr>
+</table>
+<p>T1 (4 bits) and T2 (8 bits) see only fillers, so for both values of A they compute the same index and
+tag: they cannot tell the two cases apart. T3 (16 bits) includes bit 15, and so B maps to <b>two
+different entries</b> depending on A. gshare with 12&ndash;13 history bits is in the same position as T1/T2,
+which is why it is stuck at about 50 % on B.</p>
+
+<h3>Step 2 &mdash; the learning sequence</h3>
+<ol>
+<li>At first no tagged entry is valid, so the provider is T0. The base counter for B keeps flipping,
+  because B's outcome is random from its point of view, and many predictions are wrong.</li>
+<li>On a mispredict with provider 0, rule 3 allocates in T1 (the smallest table with u = 0).
+  T1 then becomes the provider, but it has the same problem as T0.</li>
+<li>The next mispredicts (provider T1, then T2) allocate in T2 and then in T3. The T3 entry is specific to
+  one value of A, so its counter only ever sees one outcome and quickly becomes strong.</li>
+<li>From then on T3 is the provider for B. It is right, and the alternate (T2) is wrong about half the
+  time, so rule 2 sets T3's u bit. Allocation can no longer evict it.</li>
+</ol>
+<p>Result in simulation: of 5 882 executions of B, TAGE mispredicts <b>3</b> (0.05 %), gshare-4K
+mispredicts 2 925 (49.7 %). Branch A is random and costs both predictors about 50 %.</p>
+
+<h3>Update rules in numbers (from the unit test tb_tage_update)</h3>
+<table>
+<tr><th>Case</th><th>Input</th><th>Writes</th></tr>
+<tr><td>a</td><td>prov = 0, mispredict, all u = 0, taken</td><td>base 01&rarr;10; new entry in T1: valid=1, tag=meta.tag[1], ctr=100, u=0</td></tr>
+<tr><td>b</td><td>prov = 2, mispredict, u3 = 1, u4 = 0</td><td>T2 counter updated; new entry in <b>T4</b> (T3 is protected)</td></tr>
+<tr><td>c</td><td>prov = 1, mispredict, u2 = u3 = u4 = 1</td><td>no allocation; u cleared in T2, T3, T4 (other fields kept)</td></tr>
+<tr><td>d</td><td>prov = 4, mispredict</td><td>only T4's counter (no longer table exists)</td></tr>
+<tr><td>e</td><td>prov = 3, correct, alt wrong</td><td>T3 counter +1 and u = 1</td></tr>
+<tr><td>g</td><td>counter already 7 (or 0, base 3 / 0)</td><td>value stays (saturation)</td></tr>
+</table>
+
+<h2>7. Verification</h2>
+
+<svg viewBox="0 0 720 200" class="fig" xmlns="http://www.w3.org/2000/svg" font-family="Helvetica, Arial" font-size="12">
+ <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 z" fill="#333"/></marker></defs>
+ <style>.ver-b{fill:#eef4fb;stroke:#2b5d8a;stroke-width:1.4}.ver-r{fill:#fff6e5;stroke:#b7791f;stroke-width:1.4}.ver-c{fill:#fde2e2;stroke:#c53030;stroke-width:1.4}.ver-l{stroke:#333;stroke-width:1.3;fill:none;marker-end:url(#a3)}.ver-t{font-weight:bold}.ver-x{font-size:10.5px;fill:#444}</style>
+ <rect class="ver-b" x="10" y="70" width="140" height="56" rx="6"/><text x="80" y="92" text-anchor="middle" class="ver-t">trace generator</text><text x="80" y="110" text-anchor="middle" class="ver-x">17 traces, 2 M branches</text>
+ <rect class="ver-b" x="220" y="10" width="160" height="46" rx="6"/><text x="300" y="30" text-anchor="middle" class="ver-t">tage_top (RTL)</text><text x="300" y="46" text-anchor="middle" class="ver-x">design under test</text>
+ <rect class="ver-r" x="220" y="76" width="160" height="46" rx="6"/><text x="300" y="96" text-anchor="middle" class="ver-t">tage_ref</text><text x="300" y="112" text-anchor="middle" class="ver-x">independent model</text>
+ <rect class="ver-b" x="220" y="142" width="160" height="46" rx="6"/><text x="300" y="162" text-anchor="middle" class="ver-t">gshare 4K / 8K + model</text><text x="300" y="178" text-anchor="middle" class="ver-x">baseline</text>
+ <path class="ver-l" d="M150,98 L185,98 L185,33 L218,33"/><path class="ver-l" d="M150,98 L218,98"/><path class="ver-l" d="M185,98 L185,165 L218,165"/>
+ <rect class="ver-c" x="450" y="40" width="250" height="118" rx="6"/>
+ <text x="575" y="60" text-anchor="middle" class="ver-t">checker (every branch)</text>
+ <text x="460" y="80" class="ver-x">pred, alt_pred, prov, alt, idx[1..4], tag[1..4]</text>
+ <text x="460" y="96" class="ver-x">entries written by the update + GHR</text>
+ <text x="460" y="112" class="ver-x">all 2048 entries every 2048 branches</text>
+ <text x="460" y="128" class="ver-x">no X on outputs, gshare vs model</text>
+ <text x="460" y="146" class="ver-x">first mismatch -> print + $fatal</text>
+ <path class="ver-l" d="M380,33 L448,70"/><path class="ver-l" d="M380,98 L448,98"/><path class="ver-l" d="M380,165 L448,128"/>
+</svg>
+<h3>Independent reference model (tb/tage_ref.sv)</h3>
+<p>A behavioural model written directly from the specification with plain arrays and loops. It
+shares <b>no code</b> with the RTL: it has its own fold (chunk-based instead of bit-by-bit), its own
+hash and its own update. A bug would have to be made the same way twice to go unnoticed.</p>
+<div class="code"><div class="ctitle">tb/tage_ref.sv &mdash; reference update rules (lines 109&ndash;161)</div><pre><span class="ln"> 109</span>    <span class="kw">function</span> <span class="kw">automatic</span> void update(<span class="kw">input</span> <span class="kw">bit</span> taken);
+<span class="ln"> 110</span>      <span class="kw">int</span> e, b, jal;
+<span class="ln"> 111</span>      <span class="cm">// 1. counter update</span>
+<span class="ln"> 112</span>      <span class="kw">if</span> (s_prov &gt; 0) <span class="kw">begin</span>
+<span class="ln"> 113</span>        e = s_idx[s_prov];
+<span class="ln"> 114</span>        <span class="kw">if</span> (taken) <span class="kw">begin</span>
+<span class="ln"> 115</span>          <span class="kw">if</span> (tc[s_prov][e] &lt; 3&#x27;d7) tc[s_prov][e] = tc[s_prov][e] + 3&#x27;d1;
+<span class="ln"> 116</span>          <span class="kw">else</span> cov_tsat_hi++;
+<span class="ln"> 117</span>        <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln"> 118</span>          <span class="kw">if</span> (tc[s_prov][e] &gt; 3&#x27;d0) tc[s_prov][e] = tc[s_prov][e] - 3&#x27;d1;
+<span class="ln"> 119</span>          <span class="kw">else</span> cov_tsat_lo++;
+<span class="ln"> 120</span>        <span class="kw">end</span>
+<span class="ln"> 121</span>      <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln"> 122</span>        b = <span class="kw">int</span>&#x27;((s_pc &gt;&gt; 2) &amp; 32&#x27;h3FF);
+<span class="ln"> 123</span>        <span class="kw">if</span> (taken) <span class="kw">begin</span>
+<span class="ln"> 124</span>          <span class="kw">if</span> (bctr[b] &lt; 2&#x27;d3) bctr[b] = bctr[b] + 2&#x27;d1;
+<span class="ln"> 125</span>          <span class="kw">else</span> cov_bsat_hi++;
+<span class="ln"> 126</span>        <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln"> 127</span>          <span class="kw">if</span> (bctr[b] &gt; 2&#x27;d0) bctr[b] = bctr[b] - 2&#x27;d1;
+<span class="ln"> 128</span>          <span class="kw">else</span> cov_bsat_lo++;
+<span class="ln"> 129</span>        <span class="kw">end</span>
+<span class="ln"> 130</span>      <span class="kw">end</span>
+<span class="ln"> 131</span>      <span class="cm">// 2. usefulness</span>
+<span class="ln"> 132</span>      <span class="kw">if</span> (s_prov &gt; 0 &amp;&amp; s_pred == taken &amp;&amp; s_altp != taken) <span class="kw">begin</span>
+<span class="ln"> 133</span>        tu[s_prov][s_idx[s_prov]] = 1&#x27;b1;
+<span class="ln"> 134</span>        cov_uset++;
+<span class="ln"> 135</span>      <span class="kw">end</span>
+<span class="ln"> 136</span>      <span class="kw">if</span> (s_prov == NT &amp;&amp; s_pred != taken) cov_prov4_mis++;
+<span class="ln"> 137</span>      <span class="cm">// 3. allocation / u decay</span>
+<span class="ln"> 138</span>      <span class="kw">if</span> (s_pred != taken &amp;&amp; s_prov &lt; NT) <span class="kw">begin</span>
+<span class="ln"> 139</span>        jal = 0;
+<span class="ln"> 140</span>        <span class="kw">for</span> (<span class="kw">int</span> j = s_prov + 1; j &lt;= NT; j++) <span class="kw">begin</span>
+<span class="ln"> 141</span>          <span class="kw">if</span> (jal == 0 &amp;&amp; tu[j][s_idx[j]] == 1&#x27;b0) jal = j;
+<span class="ln"> 142</span>        <span class="kw">end</span>
+<span class="ln"> 143</span>        <span class="kw">if</span> (jal != 0) <span class="kw">begin</span>
+<span class="ln"> 144</span>          cov_alloc[jal]++;
+<span class="ln"> 145</span>          <span class="kw">if</span> (jal &gt; s_prov + 1) cov_alloc_skip++;
+<span class="ln"> 146</span>          <span class="kw">if</span> (tv[jal][s_idx[jal]]) cov_alloc_over++;
+<span class="ln"> 147</span>          tv[jal][s_idx[jal]] = 1&#x27;b1;
+<span class="ln"> 148</span>          tt[jal][s_idx[jal]] = 8&#x27;(s_tag[jal]);
+<span class="ln"> 149</span>          tc[jal][s_idx[jal]] = taken ? 3&#x27;b100 : 3&#x27;b011;
+<span class="ln"> 150</span>          tu[jal][s_idx[jal]] = 1&#x27;b0;
+<span class="ln"> 151</span>        <span class="kw">end</span> <span class="kw">else</span> <span class="kw">begin</span>
+<span class="ln"> 152</span>          cov_nofree++;
+<span class="ln"> 153</span>          <span class="kw">for</span> (<span class="kw">int</span> j = s_prov + 1; j &lt;= NT; j++) <span class="kw">begin</span>
+<span class="ln"> 154</span>            <span class="kw">if</span> (tu[j][s_idx[j]]) cov_uclear++;
+<span class="ln"> 155</span>            tu[j][s_idx[j]] = 1&#x27;b0;
+<span class="ln"> 156</span>          <span class="kw">end</span>
+<span class="ln"> 157</span>        <span class="kw">end</span>
+<span class="ln"> 158</span>      <span class="kw">end</span>
+<span class="ln"> 159</span>      <span class="cm">// 4. history</span>
+<span class="ln"> 160</span>      ghr = {ghr[30:0], taken};
+<span class="ln"> 161</span>    <span class="kw">endfunction</span></pre></div>
+
+<h3>What is checked</h3>
+<table>
+<tr><th>When</th><th>Check (RTL against reference)</th></tr>
+<tr><td>every branch</td><td>pred, alt_pred, provider, alternate, all 4 indices and tags; both gshare predictions against a gshare model; no X on any output</td></tr>
+<tr><td>after every update</td><td>the 5 table entries the update may have written, and the GHR</td></tr>
+<tr><td>every 2048 branches, after each reset, at the end of each trace</td><td>every entry of all five tables (2 048 entries) and the GHR</td></tr>
+</table>
+
+<h3>Test traces (2 000 000 branches in total)</h3>
+<ul>
+<li>Loops with period 3, 7 and 40; alternating; nested loops; correlated at distance 16 and 32;
+  random 90 %; a mixed 4-PC interleave.</li>
+<li>The four board traces from <code>hw_trace_gen</code>.</li>
+<li>Three random "programs" of 512 PCs spread over the whole index/tag range, with loop, biased,
+  history-correlated and constant branches (200 000 branches each). Random idle cycles with a garbage
+  PC are inserted to prove that a prediction has no side effects.</li>
+<li>An aliasing trace: 16 PCs share the same index set and 4 PCs are completely identical to the predictor.</li>
+</ul>
+
+<h3>Reset tests</h3>
+<ul>
+<li>A reset after training restores exactly the power-on state of all 2 048 entries, and the sweep takes exactly 1 024 cycles.</li>
+<li>A reset in the middle of the sweep, with random update requests on every cycle: they are all ignored.</li>
+<li>On the simulated board: all 4 modes, plus a run after CPU_RESETN. The decoded 7-segment value must equal
+  the testbench's own counts.</li>
+</ul>
+
+<h3>Unit tests (tb/unit/)</h3>
+<p><code>tb_tage_table</code> (ports, write timing, base form), <code>tb_tage_hash</code> (xor_fold vectors, GHR,
+idx/tag), <code>tb_tage_predict</code> (provider/alternate selection), <code>tb_tage_update</code> (each rule and
+corner case, 50 000 random cases), <code>tb_perf_counters</code>.</p>
+
+<h3>Functional coverage</h3>
+<p>The reference model counts how often each rule and corner case happens. The test fails if any of the
+23 bins is never hit.</p>
+<table>
+<tr><th>Bin</th><th>Hits</th><th>Bin</th><th>Hits</th></tr>
+<tr><td>provider T0 / T1 / T2 / T3 / T4</td><td>828k / 679k / 193k / 167k / 132k</td><td>allocate into T1 / T2 / T3 / T4</td><td>21k / 29k / 39k / 64k</td></tr>
+<tr><td>alternate T0 / T1 / T2 / T3</td><td>1 577k / 207k / 135k / 80k</td><td>allocation skips a table with u = 1</td><td>90k</td></tr>
+<tr><td>u set</td><td>285k</td><td>allocation overwrites a valid entry</td><td>149k</td></tr>
+<tr><td>no free table, u cleared</td><td>4 089</td><td>mispredict with provider T4</td><td>33k</td></tr>
+<tr><td>tagged counter saturates at 7 / 0</td><td>692k / 249k</td><td>base counter saturates at 3 / 0</td><td>553k / 135k</td></tr>
+</table>
+
+<h3>Do the tests really find bugs? (mutation test)</h3>
+<p>16 copies of the RTL were made, each with one deliberate bug, and each copy was run against the
+testbench. <b>All 16 were detected</b>, most within the first few branches:</p>
+<table>
+<tr><th>Injected bug</th><th>Detected by</th></tr>
+<tr><td>wrong reset value of tagged / base counter</td><td>state check right after the sweep</td></tr>
+<tr><td>updates allowed during the sweep; sweep too short</td><td>reset test / state check</td></tr>
+<tr><td>allocation into the largest instead of the smallest table</td><td>state check, branch 0</td></tr>
+<tr><td>u always set; u never cleared; u-clear also clears valid</td><td>state check</td></tr>
+<tr><td>wrong allocation counter; counter wraps instead of saturating</td><td>state check</td></tr>
+<tr><td>wrong alternate; hit ignores valid; 7-bit tag compare</td><td>output check (prov / alt)</td></tr>
+<tr><td>inverted GHR input; wrong base index; allocation into the provider's own table</td><td>GHR / state check</td></tr>
+</table>
+<div class="note">Both simulators agree: Verilator 5 (2-state, fast) and Vivado xsim (4-state, also checks for X)
+give identical numbers. <code>verilator --lint-only -Wall</code> is clean on all RTL.</div>
+
+<h2>8. Results</h2>
+<h3>Mispredicts per trace</h3>
+<table>
+<tr><th>Trace</th><th>Branches</th><th>TAGE (15 360 b)</th><th>gshare-4K (8 192 b)</th><th>gshare-8K (16 384 b)</th></tr>
+<tr><td>loop period 3</td><td>100k</td><td>3 (0.00 %)</td><td>10 (0.01 %)</td><td>10 (0.01 %)</td></tr>
+<tr><td>loop period 7</td><td>100k</td><td>4 (0.00 %)</td><td>16 (0.02 %)</td><td>17 (0.02 %)</td></tr>
+<tr><td>loop period 40</td><td>100k</td><td>2 505 (2.50 %)</td><td>2 524 (2.52 %)</td><td>2 526 (2.53 %)</td></tr>
+<tr><td>alternating</td><td>100k</td><td>5 (0.01 %)</td><td>7 (0.01 %)</td><td>7 (0.01 %)</td></tr>
+<tr><td>correlated d = 16</td><td>100k</td><td>3 101 (3.10 %)</td><td>5 938 (5.94 %)</td><td>5 942 (5.94 %)</td></tr>
+<tr><td>correlated d = 32</td><td>100k</td><td>1 499 (1.50 %)</td><td>3 070 (3.07 %)</td><td>3 074 (3.07 %)</td></tr>
+<tr><td>nested loops</td><td>100k</td><td>9 (0.01 %)</td><td>19 (0.02 %)</td><td>20 (0.02 %)</td></tr>
+<tr><td>random 90 %</td><td>100k</td><td>15 197 (15.20 %)</td><td>12 558 (12.56 %)</td><td>13 287 (13.29 %)</td></tr>
+<tr><td>mixed multi-PC</td><td>100k</td><td>6 520 (6.52 %)</td><td>13 089 (13.09 %)</td><td>7 859 (7.86 %)</td></tr>
+<tr><td>stress program 1 / 2 / 3</td><td>200k each</td><td>17.45 / 16.32 / 18.39 %</td><td>32.47 / 30.83 / 34.11 %</td><td>31.40 / 29.45 / 32.64 %</td></tr>
+<tr><td>aliasing</td><td>100k</td><td>40.20 %</td><td>40.98 %</td><td>42.88 %</td></tr>
+</table>
+<p><b>Correlated branch B only:</b> TAGE 0.05 % (d = 16) and 0.13 % (d = 32); gshare about 50 % in both cases.
+In the correlated traces, half of branch A's executions (random by design) are mispredicted by every predictor,
+which is why the totals above are 3 % and 1.5 % instead of near 0.</p>
+<ul>
+<li>TAGE wins clearly wherever history longer than 13 branches matters, and on realistic multi-branch programs
+  (about half of gshare's mispredicts on the stress programs).</li>
+<li>On a purely random 90 % branch, TAGE is worse than gshare; see section 10.</li>
+<li>Loop period 40 is longer than the 32-bit history, so every predictor misses each loop exit.</li>
+</ul>
+
+<h3>FPGA implementation (Vivado 2022.2, after place and route)</h3>
+<div class="kpi">
+<div><b>100 MHz</b>timing met (WNS +0.076 ns)</div>
+<div><b>1 569</b>LUTs (2.5 %)</div>
+<div><b>992</b>LUTRAM, 0 BRAM</div>
+<div><b>0.12 W</b>total power</div>
+</div>
+<table>
+<tr><th>Resource</th><th>Whole design</th><th>TAGE core</th><th>gshare-8K</th></tr>
+<tr><td>LUTs (logic + memory)</td><td>1 569</td><td>720</td><td>706</td></tr>
+<tr><td>LUT as logic</td><td>577</td><td>240</td><td>194</td></tr>
+<tr><td>LUT as distributed RAM</td><td>992</td><td>480</td><td>512</td></tr>
+<tr><td>Flip-flops</td><td>336</td><td>43 (32 GHR + 11 sweep)</td><td>27</td></tr>
+<tr><td>Block RAM / DSP</td><td>0 / 0</td><td>0</td><td>0</td></tr>
+</table>
+<table>
+<tr><th>Timing</th><th>Value</th></tr>
+<tr><td>Worst setup slack / hold slack</td><td>+0.076 ns / +0.122 ns (no failing paths)</td></tr>
+<tr><td>Estimated Fmax</td><td>about 100.8 MHz</td></tr>
+<tr><td>Worst path overall</td><td>inside the gshare-8K baseline (write enable of its 8K-deep LUTRAM)</td></tr>
+<tr><td>Worst TAGE path</td><td>PC &rarr; hash &rarr; LUTRAM read &rarr; tag compare &rarr; provider &rarr; register, +0.12 ns, 11 logic levels, 70 % routing</td></tr>
+<tr><td>Critical warnings</td><td>0</td></tr>
+</table>
+<p>The tables really are LUT-RAM (<code>RAMD64E</code> primitives), not flip-flops: the TAGE core has only
+43 flip-flops in total.</p>
+<h2>9. Design decisions and likely questions</h2><div class='qa'><p class='q'>Q: Why LUTRAM and not block RAM?</p><p class='a'>The specification requires the tables to be read combinationally, so predict finishes in the same cycle. Block RAM only has a synchronous (registered) read. Distributed RAM reads asynchronously, and its dual-port form gives one read/write port and one read-only port, exactly what predict + update need.</p><p class='q'>Q: Why does each table have two ports?</p><p class='a'>Predict reads at the address from the hash (port B). Update must read the current entry at the saved address and write the new value (port A, read-modify-write). With separate ports the two never interfere.</p><p class='q'>Q: Why is there a reset sweep?</p><p class='a'>LUT-RAM cannot be reset in hardware. After reset, a counter writes the initial value into all 1 024 addresses (1 024 cycles). Without it, a board reset would leave old contents in the tables and runs would not be reproducible.</p><p class='q'>Q: Why save the metadata instead of recomputing the hash at update time?</p><p class='a'>The update must modify exactly the entries the prediction used. Saving idx/tag/prov/alt guarantees that, and the update logic needs no hash circuit of its own. The specification also requires it.</p><p class='q'>Q: Why was upd_pc added to the update interface?</p><p class='a'>The base table index (pc[11:2]) is not part of tage_meta_t, so the update needs the PC to find the base counter. The metadata struct itself is exactly as specified.</p><p class='q'>Q: Why rotate f for the tag?</p><p class='a'>If index and tag were computed from the same bits in the same way, two histories that collide on the index would usually also collide on the tag, and the tag would not help. Rotating gives a different function.</p><p class='q'>Q: What is the alternate prediction used for?</p><p class='a'>Only for the u rule. An entry is marked useful when it predicted correctly and the next-best table would have been wrong; that is, it added real information.</p><p class='q'>Q: Why allocate in the smallest free table?</p><p class='a'>That is the specification&#x27;s rule. It uses the shortest additional history that might fix the mispredict, which learns fastest and keeps the long tables free for branches that really need them.</p><p class='q'>Q: How do you know the design is correct?</p><p class='a'>It is compared on every branch against an independent reference model, covering outputs and table contents, over 2 million branches. Coverage shows every rule was exercised. 16 deliberately injected bugs were all detected. Two simulators agree.</p><p class='q'>Q: Why two cycles per branch?</p><p class='a'>Predict and update are in separate cycles, as the specification requires. With only one branch in flight, the next prediction always sees the updated history, so no speculative history or repair logic is needed. That keeps the design simple.</p><p class='q'>Q: What limits the clock frequency?</p><p class='a'>The predict path does hash, table read, tag compare and provider selection in one cycle (11 logic levels). It meets 100 MHz with a small margin. Registering the hash outputs would add margin at the cost of one cycle, without changing behaviour.</p><p class='q'>Q: Why is TAGE worse than gshare on the random trace?</p><p class='a'>With random history, every mispredict allocates a new, weak tagged entry, and that entry then overrides the well-trained base counter. Full TAGE designs add extra mechanisms for this (for example use-alt-on-new-allocation and periodic u reset). They are outside this simple specification.</p><p class='q'>Q: How does this compare to the paper by Matsui et al. (MCSoC 2019)?</p><p class='a'>It has the same structure as the paper&#x27;s conventional TAGE: one base table plus four tagged tables, distributed RAM and single-cycle prediction. The paper&#x27;s TAGE reaches 98 MHz. The paper&#x27;s pTAGE adds BRAM, pipelining over both clock edges and larger tables (1K entries, 130-bit history) to predict every cycle. That is more complex, and it was intentionally not used here.</p></div>
+<h2 style="break-before: auto; margin-top: 18pt">10. Limitations</h2>
+<ul>
+<li>One branch every two cycles; a processor front end would need one prediction per cycle (pipelining).</li>
+<li>No speculative history: branches are predicted and resolved one at a time.</li>
+<li>Simple replacement policy: a 1-bit u, no periodic u reset, no use-alt-on-new-allocation. This hurts purely random branches.</li>
+<li>Maximum history 32 branches, so a 40-iteration loop exit cannot be learned.</li>
+<li>Timing margin at 100 MHz is small (+0.08 ns overall, +0.12 ns on the TAGE path).</li>
+<li>Verified in simulation and implemented to a bitstream. The bitstream has not yet been run on a physical board.</li>
+</ul>
+</body></html>

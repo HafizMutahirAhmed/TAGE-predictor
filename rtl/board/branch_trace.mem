@@ -1,0 +1,111 @@
+// branch_trace.mem - hand-written test branches for trace_rom.sv ($readmemh)
+// one branch per line:   T_PPPPPPPP
+//   T        = 1 taken / 0 not taken
+//   PPPPPPPP = branch address (pc) in hex
+// @NN = address where the next pattern starts (each pattern has room for 32
+// lines). SW[1:0] picks the pattern; the board plays it over and over
+// (40000 branches in total). If you change the number of lines in a
+// pattern, also change PAT_LEN in trace_rom.sv and tb/tb_tage.sv.
+
+// ---- SW = 00 : loop  (28 lines)
+//   for (o = 0; o < 4; o++)          // outer loop, branch at pc 1080
+//     for (i = 0; i < 6; i++) ...    // inner loop, branch at pc 1040: 5x taken, 1x not taken
+@00
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+0_00001040
+1_00001080
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+0_00001040
+1_00001080
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+0_00001040
+1_00001080
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+1_00001040
+0_00001040
+0_00001080
+
+// ---- SW = 01 : alternating  (2 lines)
+//   branch at pc 2000: taken, not taken, taken, not taken, ...
+@20
+1_00002000
+0_00002000
+
+// ---- SW = 10 : correlated if/else  (20 lines)
+//   if (x) ...      // pc 3000: depends on data x = T,N,N,T,T
+//   if (always) ... // pc 3004: always taken
+//   if (never) ...  // pc 3008: never taken
+//   if (x) ...      // pc 3100: the SAME condition as pc 3000
+@40
+1_00003000
+1_00003004
+0_00003008
+1_00003100
+0_00003000
+1_00003004
+0_00003008
+0_00003100
+0_00003000
+1_00003004
+0_00003008
+0_00003100
+1_00003000
+1_00003004
+0_00003008
+1_00003100
+1_00003000
+1_00003004
+0_00003008
+1_00003100
+
+// ---- SW = 11 : mixed  (31 lines)
+//   a small function called 5 times: a 3-trip loop (pc 4000), an if on data a
+//   (pc 4010), an always-taken if (pc 4020), the same if on a again (pc 4030),
+//   then the return check (pc 4040)
+@60
+1_00004000
+1_00004000
+0_00004000
+1_00004010
+1_00004020
+1_00004030
+1_00004000
+1_00004000
+0_00004000
+0_00004010
+1_00004020
+0_00004030
+1_00004000
+1_00004000
+0_00004000
+0_00004010
+1_00004020
+0_00004030
+1_00004000
+1_00004000
+0_00004000
+1_00004010
+1_00004020
+1_00004030
+1_00004000
+1_00004000
+0_00004000
+0_00004010
+1_00004020
+0_00004030
+0_00004040
