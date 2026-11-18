@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
 ----------------------------------------------------------------------------------------
 | Tool Version     : Vivado v.2022.2 (lin64) Build 3671981 Fri Oct 14 04:59:54 MDT 2022
-| Date             : Sun Nov  8 14:17:18 2026
+| Date             : Wed Nov 18 19:43:36 2026
 | Host             : mutahir-HP-ProBook-450-G7 running 64-bit Ubuntu 24.04.4 LTS
 | Command          : report_power -file reports/power.rpt
 | Design           : nexys7_top
@@ -30,10 +30,10 @@ Table of Contents
 ----------
 
 +--------------------------+--------------+
-| Total On-Chip Power (W)  | 0.292        |
+| Total On-Chip Power (W)  | 0.286        |
 | Design Power Budget (W)  | Unspecified* |
 | Power Budget Margin (W)  | NA           |
-| Dynamic (W)              | 0.194        |
+| Dynamic (W)              | 0.188        |
 | Device Static (W)        | 0.098        |
 | Effective TJA (C/W)      | 4.6          |
 | Max Ambient (C)          | 83.7         |
@@ -52,18 +52,18 @@ Table of Contents
 +----------------+-----------+----------+-----------+-----------------+
 | On-Chip        | Power (W) | Used     | Available | Utilization (%) |
 +----------------+-----------+----------+-----------+-----------------+
-| Clocks         |     0.018 |        5 |       --- |             --- |
-| Slice Logic    |     0.016 |    31822 |       --- |             --- |
-|   LUT as Logic |     0.014 |    10186 |     63400 |           16.07 |
-|   F7/F8 Muxes  |     0.001 |     5305 |     63400 |            8.37 |
+| Clocks         |     0.017 |        5 |       --- |             --- |
+| Slice Logic    |     0.016 |    31850 |       --- |             --- |
+|   LUT as Logic |     0.014 |    10234 |     63400 |           16.14 |
+|   F7/F8 Muxes  |     0.001 |     5308 |     63400 |            8.37 |
 |   Register     |     0.001 |    15587 |    126800 |           12.29 |
 |   CARRY4       |    <0.001 |       12 |     15850 |            0.08 |
 |   Others       |     0.000 |       12 |       --- |             --- |
-| Signals        |     0.047 |    19096 |       --- |             --- |
+| Signals        |     0.041 |    19119 |       --- |             --- |
 | MMCM           |     0.106 |        1 |         6 |           16.67 |
 | I/O            |     0.008 |       37 |       210 |           17.62 |
 | Static Power   |     0.098 |          |           |                 |
-| Total          |     0.292 |          |           |                 |
+| Total          |     0.286 |          |           |                 |
 +----------------+-----------+----------+-----------+-----------------+
 
 
@@ -73,7 +73,7 @@ Table of Contents
 +-----------+-------------+-----------+-------------+------------+-------------+-------------+------------+
 | Source    | Voltage (V) | Total (A) | Dynamic (A) | Static (A) | Powerup (A) | Budget (A)  | Margin (A) |
 +-----------+-------------+-----------+-------------+------------+-------------+-------------+------------+
-| Vccint    |       1.000 |     0.097 |       0.081 |      0.015 |       NA    | Unspecified | NA         |
+| Vccint    |       1.000 |     0.090 |       0.075 |      0.015 |       NA    | Unspecified | NA         |
 | Vccaux    |       1.800 |     0.077 |       0.059 |      0.018 |       NA    | Unspecified | NA         |
 | Vcco33    |       3.300 |     0.006 |       0.002 |      0.004 |       NA    | Unspecified | NA         |
 | Vcco25    |       2.500 |     0.000 |       0.000 |      0.000 |       NA    | Unspecified | NA         |
@@ -144,13 +144,13 @@ Table of Contents
 +--------------------+-----------+
 | Name               | Power (W) |
 +--------------------+-----------+
-| nexys7_top         |     0.194 |
-|   u_tage           |     0.078 |
-|     g_tab[1].u_tab |     0.014 |
+| nexys7_top         |     0.188 |
+|   u_tage           |     0.071 |
+|     g_tab[1].u_tab |     0.012 |
 |     g_tab[2].u_tab |     0.016 |
-|     g_tab[3].u_tab |     0.011 |
-|     g_tab[4].u_tab |     0.021 |
-|     u_hash         |     0.009 |
+|     g_tab[3].u_tab |     0.010 |
+|     g_tab[4].u_tab |     0.019 |
+|     u_hash         |     0.008 |
 +--------------------+-----------+
 
 

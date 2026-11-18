@@ -2,12 +2,13 @@
 # create_project.tcl
 # Purpose : Generate the Vivado project vivado/tage.xpr from the sources.
 #   vivado -mode batch -source scripts/create_project.tcl
-#   sources_1 : rtl/*.sv, rtl/board/*.sv        top = nexys7_top
+#   sources_1 : rtl/*.v, rtl/board/*.v          top = nexys7_top
+#               rtl/*.vh                        Verilog headers (`include, dir rtl/)
 #               rtl/board/branch_trace.mem      (trace_rom $readmemh)
 #   constrs_1 : constraints/nexys7_a100t.xdc
-#   sim_1     : tb/*.sv                         top = tb_tage
-#   sim_<unit>: tb/unit/<unit>.sv               one simulation set per unit test
-# All .sv files use file type SystemVerilog. Re-running recreates the project.
+#   sim_1     : tb/*.v                          top = tb_tage
+#   sim_<unit>: tb/unit/<unit>.v                one simulation set per unit test
+# All .v files use file type Verilog. Re-running recreates the project.
 # -----------------------------------------------------------------------------
 set root [file normalize [file join [file dirname [info script]] ..]]
 cd $root
@@ -31,12 +32,15 @@ set_property target_language Verilog   [current_project]
 set_property simulator_language Mixed  [current_project]
 set_property default_lib xil_defaultlib [current_project]
 
-# ---- design sources (package first)
-set rtl_files [concat [list rtl/tage_pkg.sv] \
-                      [lsort [lsearch -all -inline -not [glob rtl/*.sv] rtl/tage_pkg.sv]] \
-                      [lsort [glob rtl/board/*.sv]]]
+# ---- design sources (headers in rtl/, found through include_dirs)
+set inc_dir   [file join $root rtl]
+set hdr_files [lsort [glob rtl/*.vh]]
+set rtl_files [concat [lsort [glob rtl/*.v]] [lsort [glob rtl/board/*.v]]]
+add_files -norecurse -fileset sources_1 $hdr_files
+set_property file_type {Verilog Header} [get_files -of_objects [get_filesets sources_1] *.vh]
 add_files -norecurse -fileset sources_1 $rtl_files
-set_property file_type SystemVerilog [get_files -of_objects [get_filesets sources_1] *.sv]
+set_property file_type Verilog [get_files -of_objects [get_filesets sources_1] *.v]
+set_property include_dirs [list $inc_dir] [get_filesets sources_1]
 set_property top nexys7_top [get_filesets sources_1]
 # branch trace for trace_rom ($readmemh finds it because it is a project source)
 add_files -norecurse -fileset sources_1 rtl/board/branch_trace.mem
@@ -46,19 +50,21 @@ add_files -norecurse -fileset constrs_1 constraints/nexys7_a100t.xdc
 set_property target_constrs_file [get_files constraints/nexys7_a100t.xdc] [get_filesets constrs_1]
 
 # ---- main simulation set
-add_files -norecurse -fileset sim_1 [lsort [glob tb/*.sv]]
-set_property file_type SystemVerilog [get_files -of_objects [get_filesets sim_1] *.sv]
+add_files -norecurse -fileset sim_1 [lsort [glob tb/*.v]]
+set_property file_type Verilog [get_files -of_objects [get_filesets sim_1] *.v]
+set_property include_dirs [list $inc_dir] [get_filesets sim_1]
 set_property top tb_tage [get_filesets sim_1]
 set_property top_lib xil_defaultlib [get_filesets sim_1]
 set_property -name {xsim.simulate.runtime} -value {all} -objects [get_filesets sim_1]
 
 # ---- unit-test simulation sets
-foreach f [lsort [glob tb/unit/*.sv]] {
+foreach f [lsort [glob tb/unit/*.v]] {
   set top [file rootname [file tail $f]]
   set fs  "sim_[string range $top 3 end]"
   create_fileset -simset $fs
   add_files -norecurse -fileset $fs $f
-  set_property file_type SystemVerilog [get_files -of_objects [get_filesets $fs] *.sv]
+  set_property file_type Verilog [get_files -of_objects [get_filesets $fs] *.v]
+  set_property include_dirs [list $inc_dir] [get_filesets $fs]
   set_property top $top [get_filesets $fs]
   set_property top_lib xil_defaultlib [get_filesets $fs]
   set_property -name {xsim.simulate.runtime} -value {all} -objects [get_filesets $fs]

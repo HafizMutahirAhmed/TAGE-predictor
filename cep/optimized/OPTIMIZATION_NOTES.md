@@ -24,13 +24,13 @@ From `../../reports/` (baseline, 50 MHz constraint):
 
 | File | Change |
 |---|---|
-| `rtl/tage_table.sv` | Memories are now plain arrays with `(* ram_style = "distributed" *)`, written only on the clock edge and never reset, so Vivado maps them to **LUTRAM** (RAMD64E). A **clear FSM** (`clearing`, `clr_idx`) writes the reset value into one entry per clock after reset; it owns the write port while it runs. New output `ready` (0 while clearing). Read ports are unchanged (combinational). |
-| `rtl/tage_top.sv` | T0 is now a `tage_table` instance in its untagged form (`TAG_W=0, CTR_W=2, IDX_W=10, CTR_INIT=2'b10`) instead of 2048 flip-flops. New output `ready_o` = all 5 tables ready. |
-| `rtl/board/nexys7_top.sv` | `tage_ready` comes from `ready_o` (was tied to 1); the state machine already waits for it in `S_INIT`. |
-| `tb/tb_tage.sv` | After reset, checks `ready_o` is 0, then waits for it before sending branches. T0 is compared at `dut.u_t0.ctr_mem`. |
-| `tb/unit/tb_tage_table.sv` | Checks `ready` is 0 after reset and rises after exactly 256 / 1024 clocks; the async-reset test first dirties the table so the clear really clears something. |
+| `rtl/tage_table.v` | Memories are now plain arrays with `(* ram_style = "distributed" *)`, written only on the clock edge and never reset, so Vivado maps them to **LUTRAM** (RAMD64E). A **clear FSM** (`clearing`, `clr_idx`) writes the reset value into one entry per clock after reset; it owns the write port while it runs. New output `ready` (0 while clearing). Read ports are unchanged (combinational). |
+| `rtl/tage_top.v` | T0 is now a `tage_table` instance in its untagged form (`TAG_W=0, CTR_W=2, IDX_W=10, CTR_INIT=2'b10`) instead of 2048 flip-flops. New output `ready_o` = all 5 tables ready. |
+| `rtl/board/nexys7_top.v` | `tage_ready` comes from `ready_o` (was tied to 1); the state machine already waits for it in `S_INIT`. |
+| `tb/tb_tage.v` | After reset, checks `ready_o` is 0, then waits for it before sending branches. T0 is compared at `dut.u_t0.ctr_mem`. |
+| `tb/unit/tb_tage_table.v` | Checks `ready` is 0 after reset and rises after exactly 256 / 1024 clocks; the async-reset test first dirties the table so the clear really clears something. |
 
-`tage_hash`, `tage_predict`, `tage_update`, `tage_pkg`, `tage_ref` and the
+`tage_hash`, `tage_predict`, `tage_update`, `tage_defines.vh`, `tage_ref` and the
 trace / counters / display are unchanged. The prediction logic is identical:
 the same branch sequence gives exactly the same predictions as the baseline.
 

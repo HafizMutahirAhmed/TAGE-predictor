@@ -1,6 +1,6 @@
 # Simple TAGE Branch Predictor — Nexys A7-100T (Artix-7)
 
-A small TAGE branch predictor in SystemVerilog. It runs on the Digilent Nexys A7-100T
+A small TAGE branch predictor in Verilog (Verilog-2001). It runs on the Digilent Nexys A7-100T
 (`xc7a100tcsg324-1`, Vivado 2022.2) next to a gshare baseline. The mispredict counts are shown
 on the 7-segment display.
 
@@ -36,7 +36,7 @@ on the 7-segment display.
           │   │ pred = prov ? ctr[2] : base[1]     │         └──────────────────────┘
           │   └───────────────┬────────────────────┘          (GHR shifts in `taken` on the same edge)
           │                   ▼
-          │            pred, pred_meta (tage_meta_t)
+          │            pred, pred_meta (72-bit meta)
 ```
 
 Each table is a dual-port distributed RAM (LUTRAM). **Port B** is a read-only port, addressed by
@@ -67,7 +67,7 @@ LUTRAM as well, so no flip-flop valid arrays are needed.
 Pressing BTNC re-runs the sweep before every run, and so does CPU_RESETN. So every run starts from
 exactly the power-on state and gives the same numbers every time.
 
-Initial values are used only for the input synchronizers in `nexys7_top.sv` (FPGA init value).
+Initial values are used only for the input synchronizers in `nexys7_top.v` (FPGA init value).
 With `INIT=0` on CPU_RESETN, the design comes up in reset after configuration and acts as a
 power-on reset until the button has been seen released for about 10 ms.
 
@@ -89,25 +89,26 @@ never recomputed hashes.
 
 | File | Owner / role |
 |---|---|
-| `rtl/tage_pkg.sv` | Package: `NUM_T, GHR_W, HIST_LEN, IDX_W, TAG_W, CTR_W, BASE_IDX_W, BASE_CTR_W`, init/alloc constants, `tage_meta_t`, `xor_fold()` |
-| `rtl/tage_table.sv` | One table in distributed RAM: `{valid,tag,ctr,u}`, 2 combinational read ports, 1 write port. `TAG_W=0, CTR_W=2` gives the base table |
-| `rtl/tage_hash.sv` | Holds the 32-bit GHR and computes `idx[1:4]` and `tag[1:4]` |
-| `rtl/tage_predict.sv` | Tag compare, provider/alternate selection, `pred`, `meta` |
-| `rtl/tage_update.sv` | Update rules 1–3: write data and write enables for T0..T4 |
-| `rtl/tage_top.sv` | T0 + T1..T4 + hash + predict + update + init sweep |
-| `rtl/gshare.sv` | Baseline gshare, `idx = pc[K+1:2] ^ ghr[K-1:0]`, 2-bit counters, K is a parameter |
-| `rtl/board/trace_rom.sv` + `branch_trace.mem` | hand-written test branches loaded with `$readmemh`, 4 patterns on SW[1:0] |
-| `rtl/board/perf_counters.sv` | 16-bit TAGE/gshare mispredict counters and branch counter; freezes at 40000 |
-| `rtl/board/seg7_driver.sv` | 8-digit hex display multiplexer, 1 kHz refresh |
-| `rtl/board/nexys7_top.sv` | Board top: reset/start/mode, run FSM, LEDs, display |
+| `rtl/tage_defines.vh` | Header (`` `include ``): `TAGE_NUM_T, TAGE_HIST_LEN_1..4, TAGE_IDX_W, TAGE_TAG_W, TAGE_CTR_W, TAGE_BASE_IDX_W, TAGE_META_W` and the meta field selects `` `META_PROV ``, `` `META_IDX_T(t) `` … (flat 72-bit meta bus, replaces the old `tage_meta_t` struct) |
+| `rtl/tage_funcs.vh` | Header included inside a module: `xor_fold()`, `rotl()` |
+| `rtl/tage_table.v` | One table in distributed RAM: `{valid,tag,ctr,u}`, 2 combinational read ports, 1 write port. `TAG_W=0, CTR_W=2` gives the base table |
+| `rtl/tage_hash.v` | Holds the 32-bit GHR and computes `idx[1:4]` and `tag[1:4]` |
+| `rtl/tage_predict.v` | Tag compare, provider/alternate selection, `pred`, `meta` |
+| `rtl/tage_update.v` | Update rules 1–3: write data and write enables for T0..T4 |
+| `rtl/tage_top.v` | T0 + T1..T4 + hash + predict + update + init sweep |
+| `rtl/gshare.v` | Baseline gshare, `idx = pc[K+1:2] ^ ghr[K-1:0]`, 2-bit counters, K is a parameter |
+| `rtl/board/trace_rom.v` + `branch_trace.mem` | hand-written test branches loaded with `$readmemh`, 4 patterns on SW[1:0] |
+| `rtl/board/perf_counters.v` | 16-bit TAGE/gshare mispredict counters and branch counter; freezes at 40000 |
+| `rtl/board/seg7_driver.v` | 8-digit hex display multiplexer, 1 kHz refresh |
+| `rtl/board/nexys7_top.v` | Board top: reset/start/mode, run FSM, LEDs, display |
 | `constraints/nexys7_a100t.xdc` | Pins/IO standards (from Digilent master XDC), 100 MHz clock, IO timing exceptions, CFGBVS/CONFIG_VOLTAGE |
-| `tb/tage_ref.sv` | Independent behavioural reference model (arrays + loops, no shared code with `rtl/`) |
-| `tb/tb_tage.sv` | Main testbench: 13 traces × 100k branches, RTL vs reference, stats, board check |
-| `tb/unit/tb_tage_table.sv` | Unit test: table read/write ports, base form |
-| `tb/unit/tb_tage_hash.sv` | Unit test: `xor_fold`, GHR shifting, idx/tag |
-| `tb/unit/tb_tage_predict.sv` | Unit test: provider/alternate selection |
-| `tb/unit/tb_tage_update.sv` | Unit test: counter, u, allocation, u-clearing, saturation |
-| `tb/unit/tb_perf_counters.sv` | Unit test: counting, done, freeze, clear |
+| `tb/tage_ref.v` | Independent behavioural reference model (arrays + loops, no shared code with `rtl/`) |
+| `tb/tb_tage.v` | Main testbench: 13 traces × 100k branches, RTL vs reference, stats, board check |
+| `tb/unit/tb_tage_table.v` | Unit test: table read/write ports, base form |
+| `tb/unit/tb_tage_hash.v` | Unit test: `xor_fold`, GHR shifting, idx/tag |
+| `tb/unit/tb_tage_predict.v` | Unit test: provider/alternate selection |
+| `tb/unit/tb_tage_update.v` | Unit test: counter, u, allocation, u-clearing, saturation |
+| `tb/unit/tb_perf_counters.v` | Unit test: counting, done, freeze, clear |
 | `scripts/create_project.tcl` | Generates `vivado/tage.xpr` |
 | `scripts/run_sim.tcl` | Batch xsim of all simulation sets; exits non-zero on failure |
 | `scripts/build.tcl` | Synth → impl → bitstream, reports to `reports/`, `.bit` to `bitstream/` |
@@ -126,13 +127,13 @@ vivado vivado/tage.xpr                                    # open in the GUI
 
 In the GUI:
 
-* **Design Sources:** `rtl/*.sv` and `rtl/board/*.sv`, top = `nexys7_top`.
+* **Design Sources:** `rtl/*.v` and `rtl/board/*.v` (+ headers `rtl/*.vh`), top = `nexys7_top`.
 * **Constraints:** `constrs_1` → `nexys7_a100t.xdc`.
 * **Simulation Sources:** `sim_1` (top = `tb_tage`), plus one set per unit test:
   `sim_tage_table`, `sim_tage_hash`, `sim_tage_predict`, `sim_tage_update`, `sim_perf_counters`.
   Right-click a set and choose *Make Active*, then run *Run Simulation*.
 
-All `.sv` files have file type SystemVerilog. The Digilent board file is optional: it is set only
+All `.v` files have file type Verilog; `rtl/` is the include directory for the `.vh` headers. The Digilent board file is optional: it is set only
 if it is installed (here it is not, so the project uses the part only).
 
 ## 4. Simulation
@@ -345,7 +346,7 @@ Methodology report (`reports/methodology.rpt`): 0 critical findings, two warning
 ## 9. Spec notes and deviations
 
 1. **`upd_pc` added to the update interface.** The base-table index `pc[11:2]` is not part of
-   `tage_meta_t`, so the update needs the PC. The meta struct itself is exactly as specified.
+   the meta bundle, so the update needs the PC. The meta layout itself is exactly as specified.
 2. **`ready` output added** to `tage_top` and `gshare`: low during the init sweep.
 3. **The tagged counter's reset value (011) cannot be observed.** An invalid entry never hits,
    and allocation always overwrites `ctr`. It is still initialised as specified.

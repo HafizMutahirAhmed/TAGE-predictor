@@ -1,7 +1,7 @@
 Copyright 1986-2022 Xilinx, Inc. All Rights Reserved.
 ----------------------------------------------------------------------------------------
 | Tool Version     : Vivado v.2022.2 (lin64) Build 3671981 Fri Oct 14 04:59:54 MDT 2022
-| Date             : Sun Nov  8 14:10:53 2026
+| Date             : Wed Nov 18 19:19:01 2026
 | Host             : mutahir-HP-ProBook-450-G7 running 64-bit Ubuntu 24.04.4 LTS
 | Command          : report_power -file reports/power.rpt
 | Design           : nexys7_top
@@ -30,7 +30,7 @@ Table of Contents
 ----------
 
 +--------------------------+--------------+
-| Total On-Chip Power (W)  | 0.216        |
+| Total On-Chip Power (W)  | 0.215        |
 | Design Power Budget (W)  | Unspecified* |
 | Power Budget Margin (W)  | NA           |
 | Dynamic (W)              | 0.118        |
@@ -53,18 +53,18 @@ Table of Contents
 | On-Chip                  | Power (W) | Used     | Available | Utilization (%) |
 +--------------------------+-----------+----------+-----------+-----------------+
 | Clocks                   |     0.002 |        5 |       --- |             --- |
-| Slice Logic              |    <0.001 |     1652 |       --- |             --- |
-|   LUT as Logic           |    <0.001 |      434 |     63400 |            0.68 |
-|   LUT as Distributed RAM |    <0.001 |      704 |     19000 |            3.71 |
+| Slice Logic              |    <0.001 |     1661 |       --- |             --- |
+|   LUT as Logic           |    <0.001 |      442 |     63400 |            0.70 |
 |   Register               |    <0.001 |      275 |    126800 |            0.22 |
+|   LUT as Distributed RAM |    <0.001 |      704 |     19000 |            3.71 |
 |   CARRY4                 |    <0.001 |       12 |     15850 |            0.08 |
 |   F7/F8 Muxes            |    <0.001 |      103 |     63400 |            0.16 |
 |   Others                 |     0.000 |       21 |       --- |             --- |
-| Signals                  |     0.002 |     1077 |       --- |             --- |
+| Signals                  |     0.002 |     1085 |       --- |             --- |
 | MMCM                     |     0.106 |        1 |         6 |           16.67 |
-| I/O                      |     0.008 |       37 |       210 |           17.62 |
+| I/O                      |     0.007 |       37 |       210 |           17.62 |
 | Static Power             |     0.097 |          |           |                 |
-| Total                    |     0.216 |          |           |                 |
+| Total                    |     0.215 |          |           |                 |
 +--------------------------+-----------+----------+-----------+-----------------+
 
 
